@@ -2241,6 +2241,16 @@
              false,
              "IF_Barrier"},
 
+                                    {"SNop",
+             "SNop",
+             1,
+             false,
+             "Scalar Control",
+             false,
+             false,
+             false,
+             ""},
+
                                     {"SMaxI32",
              "SMaxI32",
              2,

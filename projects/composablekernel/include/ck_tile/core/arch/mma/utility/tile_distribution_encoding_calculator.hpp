@@ -9,7 +9,6 @@
 #include "ck_tile/core/numeric/integer.hpp"
 #include "ck_tile/core/numeric/vector_type.hpp"
 #include "ck_tile/core/tensor/tile_distribution_encoding.hpp"
-#include "ck_tile/core/arch/mma/mma_traits.hpp"
 
 #include <algorithm>
 #include <type_traits>

@@ -51,10 +51,29 @@ inline constexpr int32x16_t to_wmma_scale_arg(const T& vec)
 
 } // namespace scale::detail
 
+/**
+ * @defgroup scale_wmma_gfx125 Scale WMMA for GFX125
+ * @brief Scale specializations of @ref amdgcn_mma for GFX125 family.
+ *
+ * Template parameters A/B/C denote input/output types,
+ * M/N/K are the fragment (MmaTile) sizes,
+ * and `enable_if_target_*` restricts the specialization to specific GPU targets.
+ *
+ * @tparam CompilerTarget Current compiler target.
+ *
+ * @sa amdgcn_mma_base for base template parameter documentation.
+ * @{
+ */
+
+// TODO: c++20 template <amdgcn_target CompilerTarget>
+// TODO: c++20 requires
+
 // clang-format off
 #define WMMA_SCALE_IMPL(A_TYPE, B_TYPE, NUM_ACC_A, NUM_ACC_B, OP_FAMILY, INSTRUCTION, SCALE_TYPE)                                    \
     template <typename CompilerTarget>                                                                                               \
+    /*               |A B C DataTypes       |MNK            |                                                                     */ \
     struct amdgcn_mma<A_TYPE, B_TYPE, fp32_t, 16u, 16u, 128u, CompilerTarget, OP_FAMILY, enable_if_target_gfx1250_t<CompilerTarget>> \
+    /*                                                      |WS  |AParams          |BPar         |CPar |                          */ \
     : amdgcn_mma_base<A_TYPE, B_TYPE, fp32_t, 16u, 16u, 128u, 32u, 64, NUM_ACC_A, 1, NUM_ACC_B, 1, 8, 1, WmmaOp, OP_FAMILY>          \
     {                                                                                                                                \
         static constexpr const char* instruction_name = #INSTRUCTION;                                                                \
@@ -160,5 +179,7 @@ WMMA_SCALE16_IMPL(pk_fp4_t,    pk_fp4_t,    1, 1)
 #undef WMMA_SCALE16_IMPL
 #undef WMMA_SCALE_IMPL
 // clang-format on
+
+/** @} */ // scale_wmma_gfx125
 
 } // namespace ck_tile::core::arch::mma

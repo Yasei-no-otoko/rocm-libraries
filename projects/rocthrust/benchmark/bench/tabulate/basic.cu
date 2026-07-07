@@ -75,7 +75,7 @@ struct tabulate_benchmark : public primbench::benchmark_interface
     seg_size_t<T> op{thrust::raw_pointer_cast(in.data())};
 
     state.set_items(m_items);
-    state.add_reads<T>(m_items + 1);
+    state.add_reads<T>(m_items);
     state.add_writes<T>(m_items + 1);
 
     state.run([&] {

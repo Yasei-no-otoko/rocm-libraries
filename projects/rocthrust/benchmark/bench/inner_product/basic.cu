@@ -60,7 +60,7 @@ struct inner_product_benchmark : public primbench::benchmark_interface
 
     state.set_items(m_items);
     state.add_reads<T>(m_items);
-    state.add_writes<T>(m_items);
+    state.add_writes<T>(m_items + 1);
 
     state.run([&] {
       thrust::inner_product(policy(alloc), lhs.begin(), lhs.end(), rhs.begin(), T{0});
@@ -79,7 +79,8 @@ int main(int argc, char* argv[])
 {
   primbench::settings settings;
   settings.size                 = 1; // bench_utils::sizes() calculates it later.
-  settings.min_gpu_ms_per_batch = 10;
+  settings.min_gpu_ms_per_batch = 50;
+  settings.batch_window_size    = 5;
   primbench::executor executor(argc, argv, settings, primbench::flags::sync);
 
   QUEUE(int8_t)

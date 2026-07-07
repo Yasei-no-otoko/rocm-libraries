@@ -74,12 +74,15 @@ struct copy_benchmark : public primbench::benchmark_interface
     bench_utils::caching_allocator_t alloc{};
     thrust::detail::device_t policy{};
 
-    thrust::device_vector<T> in(m_items, T{1});
-    thrust::device_vector<T> out(m_items);
+    thrust::device_vector<T> in = bench_utils::generate(m_items, state.seed);
+
+    const auto selected_elements = thrust::count_if(in.cbegin(), in.cend(), select_op);
+
+    thrust::device_vector<T> out(selected_elements);
 
     state.set_items(m_items);
     state.add_reads<T>(m_items);
-    state.add_writes<T>(m_items);
+    state.add_writes<T>(selected_elements);
 
     state.run([&] {
       thrust::copy_if(policy(alloc), in.cbegin(), in.cend(), out.begin(), select_op);

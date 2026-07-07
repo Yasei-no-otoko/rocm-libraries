@@ -166,7 +166,7 @@ class GL2PrefetchLoad(GL2Prefetch):
                 mod.addModuleAsFlatItems(writer.s_mul_u64_u32(
                     sgpr(tmpSgprIdx0), sgpr(tmpSgprIdx1),
                     sgpr(tmpSgprIdx0), perpStride,
-                    tmpVgprIdx, comment="*= PGR"))
+                    tmpVgprIdx, comment="*= stride"))
                 mod.add(SAddU64(sgpr(tmpSgprIdx0, 2), sgpr(tmpSgprIdx0, 2), sgpr("Address%s"%tc, 2), comment="base address + MT offset"))
                 
             # strided batch offset

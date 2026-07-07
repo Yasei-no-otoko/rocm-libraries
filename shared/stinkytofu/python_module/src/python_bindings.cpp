@@ -127,7 +127,7 @@ NB_MODULE(_stinkytofu, m) {
     // as long as the returned asm module is in use.
     m.def(
         "lower_logical_module",
-        [](PyLogicalModule& module, std::array<int, 3> arch, nb::object options_obj) {
+        [](PyLogicalModule& module, std::array<int, 3> arch, const nb::object& options_obj) {
             StinkyAsmModule::ModuleOptions moduleOptions{};
             moduleOptions.SwPrefetchScratchSgpr = -1;
             if (nb::isinstance<nb::dict>(options_obj)) {
@@ -270,7 +270,7 @@ NB_MODULE(_stinkytofu, m) {
         // can act on it without learning a new struct type.
         .def(
             "set_reg_name",
-            [](StinkyRegister& r, const std::string& name, std::vector<int> offsets) {
+            [](StinkyRegister& r, const std::string& name, const std::vector<int>& offsets) {
                 std::string full = name;
                 for (int o : offsets) {
                     full += "+" + std::to_string(o);
@@ -365,7 +365,7 @@ NB_MODULE(_stinkytofu, m) {
             })
         .def(
             "__eq__",
-            [](const StinkyRegister& r, nb::object other) -> bool {
+            [](const StinkyRegister& r, const nb::object& other) -> bool {
                 if (!nb::isinstance<StinkyRegister>(other)) {
                     return false;
                 }
@@ -374,7 +374,7 @@ NB_MODULE(_stinkytofu, m) {
             nb::arg("other").none(true))
         .def(
             "__ne__",
-            [](const StinkyRegister& r, nb::object other) -> bool {
+            [](const StinkyRegister& r, const nb::object& other) -> bool {
                 if (!nb::isinstance<StinkyRegister>(other)) {
                     return true;
                 }
@@ -838,7 +838,7 @@ NB_MODULE(_stinkytofu, m) {
 
     m.def(
         "SrdUpperValue",
-        [](nb::object isa) {
+        [](const nb::object& isa) {
             std::array<int, 3> version{};
             if(nb::isinstance<nb::tuple>(isa) || nb::isinstance<nb::list>(isa)) {
                 version = {nb::cast<int>(isa[0]), nb::cast<int>(isa[1]), nb::cast<int>(isa[2])};

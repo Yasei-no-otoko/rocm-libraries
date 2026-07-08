@@ -1,0 +1,347 @@
+Mutation testing workflow in this repo (current pattern)
+========================================================
+
+Purpose
+-------
+This note explains how mutation testing is CURRENTLY wired in the checked-in
+TensileLite repo, based on local inspection of:
+
+- pyproject.toml
+- tox.ini
+- Tensile/Tests/unit/characterization/README.md
+- Tensile/Tests/unit/characterization/DECISIONS.md
+- existing test_mut_*_char.py files
+- the current characterization suites for DataType, ProblemType, CommonTypes,
+  and ValidParameters
+
+This is a description of the repo's live pattern, not a proposal for changing
+it.
+
+
+1. Where the mutation config lives
+----------------------------------
+The mutation setup is split across three places:
+
+1. pyproject.toml
+   - [tool.mutmut] is the primary mutmut configuration.
+   - This is where source_paths, only_mutate, do_not_mutate,
+     pytest_add_cli_args_test_selection, also_copy, and
+     mutate_only_covered_lines are defined.
+
+2. tox.ini
+   - [testenv:mutation-unit] is the entry point used to run mutation testing.
+
+3. Tensile/Tests/unit/characterization/
+   - README.md documents the workflow and policy.
+   - DECISIONS.md records accepted equivalent mutants and every
+     "# pragma: no mutate".
+
+
+2. What is configured today
+---------------------------
+The current checked-in setup is explicitly a narrow pilot slice, not a broad
+whole-tree mutation run.
+
+In pyproject.toml, [tool.mutmut] currently does the following:
+
+- source_paths = ["Tensile"]
+  mutmut copies the full Tensile package into its mutant workspace so imports
+  still resolve.
+
+- only_mutate = [
+    "Tensile/Common/Utilities.py",
+    "Tensile/TensileLogic/ValidChipId.py",
+    "Tensile/TensileLogic/ValidMatrixInstruction.py",
+    "Tensile/TensileLogic/ValidWorkGroup.py",
+    "Tensile/TensileLogic/ValidWorkGroupMappingXCC.py",
+  ]
+  Only those files are actually mutated.
+
+- do_not_mutate excludes test files and conftest files.
+
+- pytest_add_cli_args_test_selection = [
+    "Tensile/Tests/unit/characterization/CommonUtilities",
+    "Tensile/Tests/unit/characterization/TensileLogic",
+  ]
+  The mutation run is intentionally scoped to the characterization directories
+  that exercise the current slice.
+
+- also_copy = ["pytest.ini"]
+  This is required because mutmut does not auto-copy pytest.ini, but the test
+  run needs the repo's pytest config and markers.
+
+- mutate_only_covered_lines = false
+  This is intentionally disabled because the in-process coverage gather can
+  unload rocisa and later re-import it in the same process, which risks a
+  nanobind duplicate-registration abort.
+
+The README calls this a "report-only pilot". DECISIONS.md records it as:
+
+- M0 - pilot slice (report-only)
+
+
+3. How the mutation env is run
+------------------------------
+The established command is:
+
+  tox -e mutation-unit
+
+The wiring in tox.ini is simple:
+
+- install rocisa into the tox env
+- run "mutmut run {posargs}"
+- run "mutmut results"
+
+This matters because the mutation env is separate from the normal "unit" env.
+The repo is not using mutation testing as a general gate yet. The checked-in
+docs treat it as a widening/certification workflow layered on top of the
+characterization suite.
+
+
+4. How this fits the characterization strategy
+----------------------------------------------
+The characterization README lays out the per-module process:
+
+1. target a module
+2. pin current behavior with characterization tests
+3. make the tests deterministic
+4. measure honest coverage
+5. re-run the unit suite for no regression
+6. run mutation testing to certify that the assertions actually catch changes
+
+Important point: mutation testing comes AFTER a module is already characterized.
+The goal is not "more tests in general"; the goal is to prove the existing
+characterization assertions are sharp enough to detect behavior changes.
+
+
+5. How survivors are handled in this repo
+-----------------------------------------
+The live repo pattern is:
+
+1. Run the mutation slice with tox -e mutation-unit.
+2. Look at survivors from mutmut results.
+3. For each survivor on a covered line:
+   - inspect what mutmut changed
+   - decide what observable behavior actually differs
+   - add a focused, local characterization test that distinguishes original
+     from mutant
+4. Re-run the mutation env.
+5. If a survivor is genuinely equivalent (no observable difference that the
+   public behavior can distinguish), accept it explicitly.
+6. Record accepted equivalents and every "# pragma: no mutate" in DECISIONS.md.
+
+The policy text in DECISIONS.md is strict:
+
+- a mutant counts as killed only if the clean suite passes
+- the mutant fails
+- the post-revert rerun is clean again
+
+So the workflow is not "mutant failed once"; it is "clean -> mutant fails ->
+clean again".
+
+
+6. What the mutation-killing tests look like
+--------------------------------------------
+The checked-in pattern is very consistent.
+
+Location:
+- mutation-killing tests live beside the normal characterization tests for that
+  module, not in a central mutation-only directory
+
+Filename pattern:
+- test_mut_<Subject>_char.py
+
+Examples:
+- CommonUtilities/test_mut_Utilities_printWarning_char.py
+- CommonUtilities/test_mut_Utilities_ensurePath_char.py
+- CommonUtilities/test_mut_Utilities_SpinnyThing___init___char.py
+- TensileLogic/test_mut_ValidChipId__chipIdDirFromPath_char.py
+- TensileLogic/test_mut_ValidWorkGroup__validateWorkGroup_char.py
+- TensileLogic/test_mut_ValidWorkGroupMappingXCC__report_xcc_failure_char.py
+
+Conventions inside the files:
+- small and highly targeted
+- pytestmark = pytest.mark.unit
+- module docstring names the target function/method and explains the survivor
+- comments usually mention the specific mutmut ids they kill
+- assertions are exact and behavior-oriented, not broad or redundant
+
+Typical tactics used by the existing files:
+
+- exact stdout matching instead of substring matching
+  Example: printWarning got a dedicated mutation test because an older
+  "contains substring" style assertion would survive a wrapper/sentinel mutant.
+
+- exact exception type and exact exception text
+  Example: ensurePath pins both the type and the literal message.
+
+- pinning exact initialized state
+  Example: SpinnyThing.__init__ pins the chars list and initial index.
+
+- creating a minimal distinguishing input
+  Example: _chipIdDirFromPath is given a path where only the immediate parent
+  directory makes the original implementation succeed.
+
+- pinning printed diagnostics when the return value is unchanged
+  Example: _validateWorkGroup returns False in both original and mutant, so the
+  test kills the mutant by asserting the real formatted diagnostic text.
+
+This is the main repo pattern: survivors are usually killed by sharpening the
+assertion around the exact observable behavior that changed.
+
+
+7. How DECISIONS.md is used
+---------------------------
+DECISIONS.md is the registry. It is not the full rationale store.
+
+The mutation-specific section is:
+
+- "Mutation testing - accepted equivalents & # pragma: no mutate"
+
+What it currently records:
+
+- M0 - the pilot slice
+- M1 - accepted "# pragma: no mutate" cases in Tensile/Common/Utilities.py
+
+Current accepted pragmas are limited to display-only string mutations where the
+mutant changes cosmetic output text but not control flow or return values.
+
+The pattern in this repo is:
+
+- if a mutant is killable, kill it with a focused test
+- if it is not honestly killable, accept it explicitly
+- if code is annotated with "# pragma: no mutate", record that in DECISIONS.md
+
+For broader policy calls or pinned-bug decisions, the repo uses ADRs under:
+
+- Tensile/Tests/unit/characterization/adr/
+
+DECISIONS.md is the index. ADRs hold the longer "why".
+
+
+8. Practical module mapping for the next widening round
+-------------------------------------------------------
+The intended next slice is DataType, ValidParameters, and CommonTypes. There is
+one important naming/path mismatch in the original shorthand:
+
+Checked-in source files:
+
+- DataType source:
+  Tensile/Common/DataType.py
+
+- CommonTypes source:
+  Tensile/Common/Types.py
+
+- ValidParameters source:
+  Tensile/Common/ValidParameters.py
+
+There is NO checked-in file at:
+
+- Tensile/SolutionStructs/ValidParameters.py
+
+So the production files that match the clarified slice are:
+
+- Tensile/Common/DataType.py
+- Tensile/Common/ValidParameters.py
+- Tensile/Common/Types.py
+
+ProblemType is not part of this clarified slice. If it is widened later, its
+source file is Tensile/SolutionStructs/Problem.py because the ProblemType class
+lives inside that module.
+
+
+9. What characterization coverage already exists for those candidate modules
+----------------------------------------------------------------------------
+This matters because mutation widening in this repo starts from existing
+characterization coverage.
+
+DataType characterization directory:
+- Tensile/Tests/unit/characterization/DataType/
+- existing files:
+  - test_constructor_char.py
+  - test_numeric_dunder_char.py
+  - test_predicates_char.py
+
+CommonTypes characterization directory:
+- Tensile/Tests/unit/characterization/CommonTypes/
+- existing file:
+  - test_types_char.py
+
+ValidParameters characterization directory:
+- Tensile/Tests/unit/characterization/ValidParameters/
+- existing files:
+  - test_builders_char.py
+  - test_validators_char.py
+
+The repo's mutation pattern suggests that any new test_mut_*_char.py files for
+the next slice should be added into the matching characterization directory
+beside these existing tests.
+
+
+10. What will need to change when the slice is widened
+------------------------------------------------------
+Based on the current checked-in pattern, widening the slice means changing at
+least the following:
+
+1. pyproject.toml
+   - extend only_mutate with the new source files
+   - extend pytest_add_cli_args_test_selection with the matching
+     characterization directories
+
+2. characterization directories
+   - add focused test_mut_*_char.py files only for survivors that are not
+     already killed by the current characterization tests
+
+3. DECISIONS.md
+   - append any accepted equivalent mutants
+   - append any accepted "# pragma: no mutate" entries with one-line reasons
+
+Nothing in the checked-in pattern suggests broad, speculative mutation files.
+The repo kills specific survivors with specific tests after triage.
+
+
+11. Repo-specific pitfalls and norms
+------------------------------------
+These are important because they explain why the setup looks the way it does.
+
+- mutate_only_covered_lines must stay false unless the rocisa/nanobind import
+  hazard is solved first.
+
+- pytest.ini must be copied into the mutmut workspace.
+
+- The mutation run is scoped to characterization directories, not to the whole
+  unit tree.
+
+- The best mutation-killing tests here are exact, narrow, and local.
+  Broad assertions like "substring exists" or "call returned False" tend to let
+  survivors through.
+
+- Shared-state leaks are avoided carefully.
+  Existing tests use local fixtures, capsys, minimal fake inputs, and exact
+  object/exception/output assertions.
+
+- New files should follow the repo's SPDX-header rule.
+  Some older characterization files still carry the verbose MIT block, but the
+  active guidance for new files is the short SPDX header.
+
+- The checked-in tree does not contain literal "WA-7" or "WP-3" markers.
+  Those look like external work-item labels rather than repo-native names. The
+  actual repo pattern is encoded in the current pilot slice, the README policy,
+  DECISIONS.md, and the existing test_mut_*_char.py examples.
+
+
+12. Short checklist for the next round
+--------------------------------------
+If the next step is to widen this pilot using the existing repo pattern, the
+sequence is:
+
+1. confirm the intended source-file mapping
+2. extend [tool.mutmut].only_mutate
+3. extend [tool.mutmut].pytest_add_cli_args_test_selection
+4. run tox -e mutation-unit
+5. inspect survivors
+6. add focused test_mut_*_char.py files only where needed
+7. re-run tox -e mutation-unit
+8. record genuine equivalents and pragmas in DECISIONS.md
+
+That is how mutation testing is currently done in this repo.

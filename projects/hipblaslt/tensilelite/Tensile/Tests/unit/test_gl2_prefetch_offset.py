@@ -25,9 +25,12 @@
 #     so every config runs a real [cx, cy] grid (shapes vary, incl. [4,4]). Each
 #     WG self-identifies via ttmp (gfx12 carries the workgroup id in ttmp, not
 #     s2): wg_x -> WorkGroup0, wg_y -> WorkGroup1. A 2D cluster drives A and B
-#     (and MXSA/MXSB) cooperatively at the same time, since A is cooperative along
-#     WorkGroup1 / macro-tile-selected by WorkGroup0 and B is the mirror. Each WG
-#     writes to its own output region; the host aggregates across all cx*cy.
+#     (and MXSA/MXSB) cooperatively at the same time. The *whole* cluster
+#     cooperates: A is macro-tile-selected by WorkGroup0 and cooperative across
+#     the rest of the cluster, B is the mirror, and together the cluster's
+#     workgroups cover every macro-tile the cluster consumes (contiguous along
+#     the MT-selector axis). Each WG writes to its own output region; the host
+#     aggregates across all cx*cy.
 #   - StridedBatched: a batch dim (index 2) maps to WorkGroup2, and
 #     calculateStartAddr folds WorkGroup2 * Stride{tc}K into the base address.
 #     Batched configs launch a 3D [cx, cy, num_batches] grid (wg_z from
@@ -42,10 +45,12 @@
 #     MT offset, non-POT gl2ncc (vectorStaticDivideAndRemainder), and non-POT
 #     perpendicular/coalesced extents. DepthU remains a multiple of MatrixInstK.
 # Verification is set-based: the union of each tensor's computed byte offsets
-# (per stage) must equal M macro-tiles {m*mt_stride + c*GPS} shifted by the
-# stage's K increment, where M is the launch extent along the tensor's
-# MT-selector axis (1 for the non-cluster case). This tolerates the benign
-# replication when a tensor's nc < cooperative threads (e.g. MX scales).
+# (per stage) must equal the cluster's contiguous prefetch footprint
+# {perp*perp_stride + c*GPS} (the mt_tiles macro-tiles the cluster spans folded
+# into one block), shifted by the stage's K increment. The cluster's workgroups
+# jointly enumerate this footprint (the host aggregates across all cx*cy). It
+# tolerates the benign replication of the whole-cluster scheme (overlapping
+# cooperative-thread slices, and nc < cooperative threads, e.g. MX scales).
 #
 # Usage:
 #   pytest test_gl2_prefetch_offset.py -v -s
@@ -153,18 +158,24 @@ class GL2Config:
 
 
 def num_cooperative_threads(cfg, subtc):
-    """Cooperative thread count along the tensor's cluster axis (matches GL2Prefetch.init)."""
-    num_wgs = cfg.cluster[1] if subtc == "A" else cfg.cluster[0]
-    return num_wgs * cfg.num_threads
+    """Cooperative thread count = the *whole* cluster (matches GL2Prefetch.init).
+    Every workgroup in the cluster cooperates on the prefetch, so the pool is
+    ClusterDim[0]*ClusterDim[1]*NumThreads regardless of the tensor."""
+    return cfg.cluster[0] * cfg.cluster[1] * cfg.num_threads
 
 
 def tensor_dims(spec, cfg):
-    """(coal_dim, perp_dim, ncc, nc) for a tensor, matching GL2Prefetch.init."""
+    """(coal_dim, perp_dim, ncc, nc) for a tensor, matching GL2Prefetch.init.
+    The prefetched block spans *all* the macro-tiles the cluster consumes along
+    the MT-selector axis (mt_tiles of them, contiguous in memory), so the tile
+    dimension is scaled by mt_tiles: it is the coalesced dim for TLU/MX and the
+    perpendicular dim for non-TLU."""
+    M = mt_tiles(spec, cfg)
     if spec.is_mx:
-        coal = spec.mt * cfg.matrix_inst_k // cfg.mx_block
+        coal = spec.mt * M * cfg.matrix_inst_k // cfg.mx_block
         perp = cfg.depth_u // cfg.matrix_inst_k
     else:
-        coal, perp = (spec.mt, cfg.depth_u) if spec.tlu else (cfg.depth_u, spec.mt)
+        coal, perp = (spec.mt * M, cfg.depth_u) if spec.tlu else (cfg.depth_u, spec.mt * M)
     ncc = max(1, round(coal * spec.bpe) // GLOBAL_PREFETCH_SIZE)
     return coal, perp, ncc, perp * ncc
 
@@ -251,6 +262,10 @@ CONFIGS = [
     GL2Config("ab_tlu_nl2", [_A(True, 256), _B(True, 256)], depth_u=640, cluster=(2, 2)),
     # ---- non-POT cooperative cluster extent (scalarStaticRemainder non-POT path) ----
     GL2Config("ab_cluster_cy3", [_A(True, 256), _B(True, 256)], cluster=(2, 3)),
+    # ---- non-POT cluster on a non-TLU layout: both cluster axes are non-POT, so
+    # every scalarStaticRemainder (tile-selector and share) hits the non-POT path
+    # for both A and B, while the MT offset/folded tile dim land on the perp dim ----
+    GL2Config("ab_ntlu_cluster3", [_A(False, 256), _B(False, 256)], cluster=(3, 3)),
 ]
 
 
@@ -609,9 +624,11 @@ def expected_offsets(spec, cfg, stage=0, batch=0):
     `batch` adds the StridedBatched shift batch * Stride{tc}K * bpe (the
     WorkGroup2 * batchStride term calculateStartAddr folds into the base
     address); like the stage shift it is a pure translation of the set.
-    Per tensor this is M macro-tiles (MT-selector axis) x ncc coalesced GPS-chunks
-    x `perp` perpendicular rows, with the edge-limit clamp min(index, SizeFree-1)
-    applied to the coalesced index (TLU/MX) or the perpendicular index (non-TLU).
+    The whole cluster cooperates, so the footprint spans all mt_tiles macro-tiles
+    the cluster consumes as one contiguous block (folded into tensor_dims): ncc
+    coalesced GPS-chunks x `perp` perpendicular rows, with the edge-limit clamp
+    min(index, SizeFree-1) applied to the coalesced index (TLU/MX) or the
+    perpendicular index (non-TLU).
 
     We deliberately do NOT model the thread<->address mapping (cooperative-WG
     fan-out, inactive-bit shifts, per-thread load counts): those are an
@@ -619,34 +636,30 @@ def expected_offsets(spec, cfg, stage=0, batch=0):
     only a coverage bug (a missing/extra/out-of-bounds address) fails."""
     GPS = GLOBAL_PREFETCH_SIZE
     bpe = spec.bpe
-    coal, perp, ncc, _ = tensor_dims(spec, cfg)
-    M = mt_tiles(spec, cfg)
+    coal, perp, ncc, _ = tensor_dims(spec, cfg)   # tile dim folded over the cluster
     size_free = free_dim_size(cfg, spec.subtc)
     if spec.is_mx:
         mx_unit = cfg.matrix_inst_k // cfg.mx_block
         perp_stride = size_free * mx_unit
         edge = (size_free - 1) * mx_unit
-        mt_off = mx_unit * spec.mt
     else:
-        perp_stride = coal            # StrideAL (TLU) == mt; StrideAI (nTLU) == DepthU
+        perp_stride = coal            # StrideAL (TLU) / StrideAI (nTLU): the folded leading dim
         edge = size_free - 1
-        mt_off = spec.mt
     coal_to_mt = (spec.is_mx or spec.tlu)    # MT offset & clamp land in coal (else perp)
     gps_elems = round(GPS / bpe)
     shift = (cfg.pgr + stage) * inc_bytes(spec, cfg)
     if cfg.batched:
         shift += batch * round(batch_stride_elems(spec, cfg) * bpe)
     out = set()
-    for m in range(M):
-        for c in range(ncc):
-            for p in range(perp):
-                if coal_to_mt:
-                    coal_idx = min(m * mt_off + c * gps_elems, edge)
-                    perp_idx = p
-                else:
-                    perp_idx = min(p + m * mt_off, edge)
-                    coal_idx = c * gps_elems
-                out.add(round((perp_idx * perp_stride + coal_idx) * bpe) + shift)
+    for c in range(ncc):
+        for p in range(perp):
+            if coal_to_mt:
+                coal_idx = min(c * gps_elems, edge)
+                perp_idx = p
+            else:
+                perp_idx = min(p, edge)
+                coal_idx = c * gps_elems
+            out.add(round((perp_idx * perp_stride + coal_idx) * bpe) + shift)
     return out
 
 

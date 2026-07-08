@@ -24,14 +24,22 @@ class GL2PrefetchLoad(GL2Prefetch):
         subTc: str = tc[-1]
         isMX: bool = tc.startswith("MX")
         mt: int = kernel["MacroTile%s" % subTc]
-        numCooperativeWGs: int = kernel["ClusterDim"][1] if subTc == "A" else kernel["ClusterDim"][0]
+        # Cooperative prefetch spans the *whole* cluster: every workgroup in the
+        # cluster contributes threads, and together they cover all the distinct
+        # macro-tiles the cluster consumes rather than only the single tile one
+        # workgroup uses for its own computation. Along the MT-selector axis
+        # (WorkGroup0 for A, WorkGroup1 for B) the cluster spans numTileWGs
+        # contiguous macro-tiles, so the tile dimension of the prefetched block
+        # is scaled accordingly.
+        numTileWGs: int = kernel["ClusterDim"][0] if subTc == "A" else kernel["ClusterDim"][1]
+        numCooperativeWGs: int = kernel["ClusterDim"][0] * kernel["ClusterDim"][1]
         numCooperativeThreads: int = numCooperativeWGs * kernel["NumThreads"]
-        
+
         if isMX:
-            coalescedDim = mt * kernel["MatrixInstK"] // kernel["ProblemType"][f"MXBlock{subTc}"]
+            coalescedDim = mt * numTileWGs * kernel["MatrixInstK"] // kernel["ProblemType"][f"MXBlock{subTc}"]
             perpendicularDim = kernel["DepthU"] // kernel["MatrixInstK"]
         else:
-            coalescedDim, perpendicularDim = (mt, kernel["DepthU"]) if tp["tlu"] else (kernel["DepthU"], mt)
+            coalescedDim, perpendicularDim = (mt * numTileWGs, kernel["DepthU"]) if tp["tlu"] else (kernel["DepthU"], mt * numTileWGs)
 
         tp["gl2ncp"] = perpendicularDim
         tp["gl2ncc"] = max(1, round(coalescedDim * tp["bpeGR"]) // globalPrefetchSize)
@@ -67,13 +75,17 @@ class GL2PrefetchLoad(GL2Prefetch):
         tileStride: str | RegisterContainer = writer.strideRef(subTc, tIdx)
         unrollStride: str | RegisterContainer = writer.strideRef(subTc, 3)
         perpStride: str | RegisterContainer = unrollStride if tlu else tileStride
-        sgprWorkgroupName: str = f"WorkGroup{tIdx}"
-        sgprCooperativeWgName: str = f"WorkGroup{1 - tIdx}"
+        # WorkGroup{tIdx} selects the macro-tile; the other cluster axis is the
+        # cooperative sharing axis. The whole cluster cooperates on the prefetch.
+        sgprTileWgName: str = f"WorkGroup{tIdx}"
+        sgprShareWgName: str = f"WorkGroup{1 - tIdx}"
         sgprSizeFreeName: str = f"Size{INDEX_CHARS[tIdx]}"
         numThreads: int = kernel["NumThreads"]
         vgprAddrBaseName: str = f"GL2PrefetchAddr{tc}"
         vgprAddrName0: str = f"{vgprAddrBaseName}_0"
-        numCooperativeWGs: int = kernel["ClusterDim"][1] if subTc == "A" else kernel["ClusterDim"][0]
+        numTileWGs: int = kernel["ClusterDim"][tIdx]
+        numShareWGs: int = kernel["ClusterDim"][1 - tIdx]
+        numCooperativeWGs: int = numTileWGs * numShareWGs
         numCooperativeThreads: int = numCooperativeWGs * numThreads
         ncc: int = tp["gl2ncc"]
         nc: int = tp["gl2nc"]
@@ -93,11 +105,22 @@ class GL2PrefetchLoad(GL2Prefetch):
             tmpSgprIdx1 = tmpSgprRes.idx + 1
             tmpSgprIdx2 = tmpSgprRes.idx + 2
             tmpSgprIdx3 = tmpSgprRes.idx + 3
-            # offset inside MT
-            mod.add(scalarStaticRemainder(tmpSgprIdx3, tmpSgprIdx3, sgprCooperativeWgName, numCooperativeWGs, \
-                tmpSgprRes, comment="WG index in cluster"))
-            mod.add(SMulI32(sgpr(tmpSgprIdx0), sgpr(tmpSgprIdx3), numThreads, \
-                comment="WG idx * numThreads"))
+            # Cooperative thread index over the whole cluster. Flatten this
+            # workgroup's cluster-local (tile, share) position into a single index
+            # and offset the wave's Serial by it, so the cluster's threads jointly
+            # enumerate all cooperative chunks. tmpSgprIdx3 keeps the cluster-local
+            # tile index; the cluster's base macro-tile (WorkGroup{tIdx} minus it)
+            # is recovered from it for the MT offset below.
+            mod.add(scalarStaticRemainder(tmpSgprIdx0, tmpSgprIdx3, sgprTileWgName, numTileWGs, \
+                tmpSgprRes, comment="cluster-local tile idx"))
+            mod.add(scalarStaticRemainder(tmpSgprIdx0, tmpSgprIdx0, sgprShareWgName, numShareWGs, \
+                tmpSgprRes, comment="cluster-local share idx"))
+            mod.add(SMulI32(sgpr(tmpSgprIdx1), sgpr(tmpSgprIdx3), numShareWGs, \
+                comment="tile idx * shareWGs"))
+            mod.add(SAddU32(sgpr(tmpSgprIdx1), sgpr(tmpSgprIdx1), sgpr(tmpSgprIdx0), \
+                comment="flattened cluster WG idx"))
+            mod.add(SMulI32(sgpr(tmpSgprIdx0), sgpr(tmpSgprIdx1), numThreads, \
+                comment="cluster WG idx * numThreads"))
             mod.add(VAddU32(vgpr(vgprAddrName0), vgpr("Serial"), sgpr(tmpSgprIdx0), \
                 comment="cooperative thread idx"))
             if inactiveShiftBits > 0:
@@ -114,17 +137,22 @@ class GL2PrefetchLoad(GL2Prefetch):
             mod.add(VCmpGtU32(VCC(), vgpr(vgprAddrNameLast), nc-1, comment="overflow number of needed cachelines?"))
             mod.add(VCndMaskB32(vgpr(vgprAddrNameLast), vgpr(vgprAddrNameLast), nc-1, VCC()))
 
-            # MT offset & edge limit (in units of elements)
+            # MT offset & edge limit (in units of elements). The offset is the
+            # cluster's base macro-tile (WorkGroup{tIdx} floored to the cluster,
+            # i.e. minus the cluster-local tile idx kept in tmpSgprIdx3), since the
+            # cooperative block now spans all numTileWGs tiles the cluster covers.
+            mod.add(SSubI32(sgpr(tmpSgprIdx0), sgpr(sgprTileWgName), sgpr(tmpSgprIdx3), \
+                comment="cluster base tile"))
             if isMX:
-                mod.add(SMulI32(sgpr(tmpSgprIdx0), sgpr(sgprWorkgroupName), mxUnit * mt, \
-                    comment=f"wgId * mxUnit({mxUnit}) * MT({mt})"))
+                mod.add(SMulI32(sgpr(tmpSgprIdx0), sgpr(tmpSgprIdx0), mxUnit * mt, \
+                    comment=f"clusterBaseTile * mxUnit({mxUnit}) * MT({mt})"))
                 mod.add(SSubI32(sgpr(tmpSgprIdx1), sgpr(sgprSizeFreeName), 1))
                 mod.add(SMulI32(sgpr(tmpSgprIdx1), sgpr(tmpSgprIdx1), mxUnit))
-                mod.add(SSubI32(sgpr(tmpSgprIdx1), sgpr(tmpSgprIdx1), sgpr(tmpSgprIdx0), comment="max offset inside MT"))
+                mod.add(SSubI32(sgpr(tmpSgprIdx1), sgpr(tmpSgprIdx1), sgpr(tmpSgprIdx0), comment="max offset inside cluster tiles"))
             else:
-                mod.add(SMulI32(sgpr(tmpSgprIdx0), sgpr(sgprWorkgroupName), mt, comment=f"wgId * MT({mt})"))
+                mod.add(SMulI32(sgpr(tmpSgprIdx0), sgpr(tmpSgprIdx0), mt, comment=f"clusterBaseTile * MT({mt})"))
                 mod.add(SSubI32(sgpr(tmpSgprIdx1), sgpr(sgprSizeFreeName), 1))
-                mod.add(SSubI32(sgpr(tmpSgprIdx1), sgpr(tmpSgprIdx1), sgpr(tmpSgprIdx0), comment="max offset inside MT"))
+                mod.add(SSubI32(sgpr(tmpSgprIdx1), sgpr(tmpSgprIdx1), sgpr(tmpSgprIdx0), comment="max offset inside cluster tiles"))
 
             # will we have MX stride later?
             if isMX:

@@ -82,8 +82,8 @@ int main(int argc, char* argv[])
 {
   primbench::settings settings;
   settings.size                 = 1; // bench_utils::sizes() calculates it later.
-  settings.min_gpu_ms_per_batch = 100;
-  settings.batch_window_size    = 3;
+  settings.min_gpu_ms_per_batch = 300;
+  settings.batch_window_size    = 2;
   primbench::executor executor(argc, argv, settings, primbench::flags::sync);
 
   constexpr int entropy_reductions[] = {0, 2, 6}; // 1.000, 0.544, 0.000;

@@ -225,6 +225,17 @@ set( MIOPEN_BACKEND ${MIOPEN_DEFAULT_BACKEND} CACHE STRING
 set_property( CACHE MIOPEN_BACKEND PROPERTY STRINGS
     HIP HIPOC HIPNOGPU)
 
+# The OpenCL backend has been removed; all kernels and solvers are HIP.
+# For backward compatibility, accept -DMIOPEN_BACKEND=OpenCL but build the
+# HIP backend instead, so existing configurations keep working. This
+# normalization is the single source of truth: every downstream check keys
+# off MIOPEN_BACKEND STREQUAL "HIP" or the derived MIOPEN_BACKEND_HIP macro.
+if( MIOPEN_BACKEND STREQUAL "OpenCL" )
+    message( WARNING "MIOPEN_BACKEND=OpenCL is deprecated and no longer "
+        "supported; building the HIP backend instead." )
+    set( MIOPEN_BACKEND "HIP" )
+endif()
+
 set_var_to_condition(MIOPEN_BUILD_DRIVER_DEFAULT (NOT MIOPEN_EMBED_BUILD) AND (NOT (MIOPEN_BACKEND STREQUAL "HIPNOGPU")))
 option(MIOPEN_BUILD_DRIVER "Build MIOpenDriver (and use it in tests)" ${MIOPEN_BUILD_DRIVER_DEFAULT})
 message(STATUS "MIOPEN_BUILD_DRIVER: ${MIOPEN_BUILD_DRIVER}" )

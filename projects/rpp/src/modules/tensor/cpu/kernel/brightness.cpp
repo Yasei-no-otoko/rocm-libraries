@@ -111,7 +111,7 @@ inline void compute_brightness_4_host(__m128* p, __m128* pBrightnessParams) {
 static inline RppStatus brightness_u8_u8_host_impl(Rpp8u* srcPtrImage, RpptDescPtr srcDescPtr,
                                                    Rpp8u* dstPtrImage, RpptDescPtr dstDescPtr,
                                                    Rpp32f alpha, Rpp32f beta, RpptROI roi,
-                                                   RppLayoutParams layoutParams) {
+                                                   RppLayoutParams layoutParams, rpp::Handle& handle) {
     Rpp32u bufferLength = roi.xywhROI.roiWidth * layoutParams.bufferMultiplier;
 
     Rpp8u *srcPtrChannel, *dstPtrChannel;
@@ -122,6 +122,12 @@ static inline RppStatus brightness_u8_u8_host_impl(Rpp8u* srcPtrImage, RpptDescP
     Rpp32u alignedLength = (bufferLength / 48) * 48;
     Rpp32u vectorIncrement = 48;
     Rpp32u vectorIncrementPerChannel = 16;
+    bool enableRowParallelization = (srcDescPtr->n == 1 && dstDescPtr->n == 1);
+
+    if(enableRowParallelization) {
+        omp_set_dynamic(0);
+        omp_set_num_threads(handle.GetNumThreads());
+    }
 
 #if __AVX2__
     __m256 pBrightnessParams[2];
@@ -136,13 +142,15 @@ static inline RppStatus brightness_u8_u8_host_impl(Rpp8u* srcPtrImage, RpptDescP
     // Brightness with fused output-layout toggle (NHWC -> NCHW)
     if ((srcDescPtr->c == 3) && (srcDescPtr->layout == RpptLayout::NHWC) &&
         (dstDescPtr->layout == RpptLayout::NCHW)) {
-        Rpp8u *srcPtrRow, *dstPtrRowR, *dstPtrRowG, *dstPtrRowB;
-        srcPtrRow = srcPtrChannel;
-        dstPtrRowR = dstPtrChannel;
-        dstPtrRowG = dstPtrRowR + dstDescPtr->strides.cStride;
-        dstPtrRowB = dstPtrRowG + dstDescPtr->strides.cStride;
 
+        #pragma omp parallel for if(enableRowParallelization) schedule(static)
         for (int i = 0; i < roi.xywhROI.roiHeight; i++) {
+            // Each thread calculates its own row pointers
+            Rpp8u *srcPtrRow = srcPtrChannel + i * srcDescPtr->strides.hStride;
+            Rpp8u *dstPtrRowR = dstPtrChannel + i * dstDescPtr->strides.hStride;
+            Rpp8u *dstPtrRowG = dstPtrRowR + dstDescPtr->strides.cStride;
+            Rpp8u *dstPtrRowB = dstPtrRowG + dstDescPtr->strides.cStride;
+
             Rpp8u *srcPtrTemp, *dstPtrTempR, *dstPtrTempG, *dstPtrTempB;
             srcPtrTemp = srcPtrRow;
             dstPtrTempR = dstPtrRowR;
@@ -179,24 +187,21 @@ static inline RppStatus brightness_u8_u8_host_impl(Rpp8u* srcPtrImage, RpptDescP
                     std::nearbyintf((((Rpp32f)(srcPtrTemp[2])) * alpha) + beta));
                 srcPtrTemp += 3;
             }
-
-            srcPtrRow += srcDescPtr->strides.hStride;
-            dstPtrRowR += dstDescPtr->strides.hStride;
-            dstPtrRowG += dstDescPtr->strides.hStride;
-            dstPtrRowB += dstDescPtr->strides.hStride;
         }
     }
 
     // Brightness with fused output-layout toggle (NCHW -> NHWC)
     else if ((srcDescPtr->c == 3) && (srcDescPtr->layout == RpptLayout::NCHW) &&
              (dstDescPtr->layout == RpptLayout::NHWC)) {
-        Rpp8u *srcPtrRowR, *srcPtrRowG, *srcPtrRowB, *dstPtrRow;
-        srcPtrRowR = srcPtrChannel;
-        srcPtrRowG = srcPtrRowR + srcDescPtr->strides.cStride;
-        srcPtrRowB = srcPtrRowG + srcDescPtr->strides.cStride;
-        dstPtrRow = dstPtrChannel;
 
+        #pragma omp parallel for if(enableRowParallelization) schedule(static)
         for (int i = 0; i < roi.xywhROI.roiHeight; i++) {
+            // Each thread calculates its own row pointers
+            Rpp8u *srcPtrRowR = srcPtrChannel + i * srcDescPtr->strides.hStride;
+            Rpp8u *srcPtrRowG = srcPtrRowR + srcDescPtr->strides.cStride;
+            Rpp8u *srcPtrRowB = srcPtrRowG + srcDescPtr->strides.cStride;
+            Rpp8u *dstPtrRow = dstPtrChannel + i * dstDescPtr->strides.hStride;
+
             Rpp8u *srcPtrTempR, *srcPtrTempG, *srcPtrTempB, *dstPtrTemp;
             srcPtrTempR = srcPtrRowR;
             srcPtrTempG = srcPtrRowG;
@@ -234,23 +239,23 @@ static inline RppStatus brightness_u8_u8_host_impl(Rpp8u* srcPtrImage, RpptDescP
                 srcPtrTempG++;
                 srcPtrTempB++;
             }
-
-            srcPtrRowR += srcDescPtr->strides.hStride;
-            srcPtrRowG += srcDescPtr->strides.hStride;
-            srcPtrRowB += srcDescPtr->strides.hStride;
-            dstPtrRow += dstDescPtr->strides.hStride;
         }
     }
 
     // Brightness without fused output-layout toggle (NHWC -> NHWC or NCHW -> NCHW)
     else {
         Rpp32u alignedLength = bufferLength & ~15;
-        for (int c = 0; c < layoutParams.channelParam; c++) {
-            Rpp8u *srcPtrRow, *dstPtrRow;
-            srcPtrRow = srcPtrChannel;
-            dstPtrRow = dstPtrChannel;
 
+        // Parallelize over both channels and rows using collapse(2)
+        #pragma omp parallel for collapse(2) if(enableRowParallelization) schedule(static)
+        for (int c = 0; c < layoutParams.channelParam; c++) {
             for (int i = 0; i < roi.xywhROI.roiHeight; i++) {
+                // Each thread calculates its own row and channel pointers
+                Rpp8u *srcPtrChannel_c = srcPtrChannel + c * srcDescPtr->strides.cStride;
+                Rpp8u *dstPtrChannel_c = dstPtrChannel + c * dstDescPtr->strides.cStride;
+                Rpp8u *srcPtrRow = srcPtrChannel_c + i * srcDescPtr->strides.hStride;
+                Rpp8u *dstPtrRow = dstPtrChannel_c + i * dstDescPtr->strides.hStride;
+
                 Rpp8u *srcPtrTemp, *dstPtrTemp;
                 srcPtrTemp = srcPtrRow;
                 dstPtrTemp = dstPtrRow;
@@ -280,11 +285,7 @@ static inline RppStatus brightness_u8_u8_host_impl(Rpp8u* srcPtrImage, RpptDescP
                     srcPtrTemp++;
                     dstPtrTemp++;
                 }
-                srcPtrRow += srcDescPtr->strides.hStride;
-                dstPtrRow += dstDescPtr->strides.hStride;
             }
-            srcPtrChannel += srcDescPtr->strides.cStride;
-            dstPtrChannel += dstDescPtr->strides.cStride;
         }
     }
 
@@ -310,7 +311,7 @@ RppStatus brightness_u8_u8_host_tensor(Rpp8u* srcPtr, RpptDescPtr srcDescPtr, Rp
 
         brightness_u8_u8_host_impl(srcPtrImage, srcDescPtr, dstPtrImage, dstDescPtr,
                                    alphaTensor[batchCount], betaTensor[batchCount], roi,
-                                   layoutParams);
+                                   layoutParams, handle);
     }
 
     return RPP_SUCCESS;
@@ -319,7 +320,7 @@ RppStatus brightness_u8_u8_host_tensor(Rpp8u* srcPtr, RpptDescPtr srcDescPtr, Rp
 static inline RppStatus brightness_f32_f32_host_impl(Rpp32f* srcPtrImage, RpptDescPtr srcDescPtr,
                                                      Rpp32f* dstPtrImage, RpptDescPtr dstDescPtr,
                                                      Rpp32f alpha, Rpp32f beta, RpptROI roi,
-                                                     RppLayoutParams layoutParams) {
+                                                     RppLayoutParams layoutParams, rpp::Handle& handle) {
     Rpp32u bufferLength = roi.xywhROI.roiWidth * layoutParams.bufferMultiplier;
 
     Rpp32f *srcPtrChannel, *dstPtrChannel;
@@ -345,16 +346,23 @@ static inline RppStatus brightness_f32_f32_host_impl(Rpp32f* srcPtrImage, RpptDe
     pBrightnessParams[1] = _mm_set1_ps(beta);
 #endif
 
+    bool enableRowParallelization = (srcDescPtr->n == 1 && dstDescPtr->n == 1);
+
+    if(enableRowParallelization) {
+        omp_set_dynamic(0);
+        omp_set_num_threads(handle.GetNumThreads());
+    }
+
     // Brightness with fused output-layout toggle (NHWC -> NCHW)
     if ((srcDescPtr->c == 3) && (srcDescPtr->layout == RpptLayout::NHWC) &&
         (dstDescPtr->layout == RpptLayout::NCHW)) {
-        Rpp32f *srcPtrRow, *dstPtrRowR, *dstPtrRowG, *dstPtrRowB;
-        srcPtrRow = srcPtrChannel;
-        dstPtrRowR = dstPtrChannel;
-        dstPtrRowG = dstPtrRowR + dstDescPtr->strides.cStride;
-        dstPtrRowB = dstPtrRowG + dstDescPtr->strides.cStride;
-
+        #pragma omp parallel for if(enableRowParallelization) schedule(static)
         for (int i = 0; i < roi.xywhROI.roiHeight; i++) {
+            Rpp32f *srcPtrRow = srcPtrChannel + i * srcDescPtr->strides.hStride;
+            Rpp32f *dstPtrRowR = dstPtrChannel + i * dstDescPtr->strides.hStride;
+            Rpp32f *dstPtrRowG = dstPtrRowR + dstDescPtr->strides.cStride;
+            Rpp32f *dstPtrRowB = dstPtrRowG + dstDescPtr->strides.cStride;
+
             Rpp32f *srcPtrTemp, *dstPtrTempR, *dstPtrTempG, *dstPtrTempB;
             srcPtrTemp = srcPtrRow;
             dstPtrTempR = dstPtrRowR;
@@ -402,13 +410,13 @@ static inline RppStatus brightness_f32_f32_host_impl(Rpp32f* srcPtrImage, RpptDe
     // Brightness with fused output-layout toggle (NCHW -> NHWC)
     else if ((srcDescPtr->c == 3) && (srcDescPtr->layout == RpptLayout::NCHW) &&
              (dstDescPtr->layout == RpptLayout::NHWC)) {
-        Rpp32f *srcPtrRowR, *srcPtrRowG, *srcPtrRowB, *dstPtrRow;
-        srcPtrRowR = srcPtrChannel;
-        srcPtrRowG = srcPtrRowR + srcDescPtr->strides.cStride;
-        srcPtrRowB = srcPtrRowG + srcDescPtr->strides.cStride;
-        dstPtrRow = dstPtrChannel;
-
+        #pragma omp parallel for if(enableRowParallelization) schedule(static)
         for (int i = 0; i < roi.xywhROI.roiHeight; i++) {
+            Rpp32f *srcPtrRowR = srcPtrChannel + i * srcDescPtr->strides.hStride;
+            Rpp32f *srcPtrRowG = srcPtrRowR + srcDescPtr->strides.cStride;
+            Rpp32f *srcPtrRowB = srcPtrRowG + srcDescPtr->strides.cStride;
+            Rpp32f *dstPtrRow = dstPtrChannel + i * dstDescPtr->strides.hStride;
+
             Rpp32f *srcPtrTempR, *srcPtrTempG, *srcPtrTempB, *dstPtrTemp;
             srcPtrTempR = srcPtrRowR;
             srcPtrTempG = srcPtrRowG;
@@ -459,12 +467,13 @@ static inline RppStatus brightness_f32_f32_host_impl(Rpp32f* srcPtrImage, RpptDe
     else {
         Rpp32u alignedLength = bufferLength & ~(vectorIncrementPerChannel - 1);
 
+        #pragma omp parallel for collapse(2) if(enableRowParallelization) schedule(static)
         for (int c = 0; c < layoutParams.channelParam; c++) {
-            Rpp32f *srcPtrRow, *dstPtrRow;
-            srcPtrRow = srcPtrChannel;
-            dstPtrRow = dstPtrChannel;
-
             for (int i = 0; i < roi.xywhROI.roiHeight; i++) {
+                Rpp32f *srcPtrChannel_c = srcPtrChannel + c * srcDescPtr->strides.cStride;
+                Rpp32f *dstPtrChannel_c = dstPtrChannel + c * dstDescPtr->strides.cStride;
+                Rpp32f *srcPtrRow = srcPtrChannel_c + i * srcDescPtr->strides.hStride;
+                Rpp32f *dstPtrRow = dstPtrChannel_c + i * dstDescPtr->strides.hStride;
                 Rpp32f *srcPtrTemp, *dstPtrTemp;
                 srcPtrTemp = srcPtrRow;
                 dstPtrTemp = dstPtrRow;
@@ -498,13 +507,7 @@ static inline RppStatus brightness_f32_f32_host_impl(Rpp32f* srcPtrImage, RpptDe
                     srcPtrTemp++;
                     dstPtrTemp++;
                 }
-
-                srcPtrRow += srcDescPtr->strides.hStride;
-                dstPtrRow += dstDescPtr->strides.hStride;
             }
-
-            srcPtrChannel += srcDescPtr->strides.cStride;
-            dstPtrChannel += dstDescPtr->strides.cStride;
         }
     }
 
@@ -530,7 +533,7 @@ RppStatus brightness_f32_f32_host_tensor(Rpp32f* srcPtr, RpptDescPtr srcDescPtr,
 
         brightness_f32_f32_host_impl(srcPtrImage, srcDescPtr, dstPtrImage, dstDescPtr,
                                      alphaTensor[batchCount], betaTensor[batchCount] * ONE_OVER_255,
-                                     roi, layoutParams);
+                                     roi, layoutParams, handle);
     }
 
     return RPP_SUCCESS;
@@ -539,7 +542,7 @@ RppStatus brightness_f32_f32_host_tensor(Rpp32f* srcPtr, RpptDescPtr srcDescPtr,
 static inline RppStatus brightness_f16_f16_host_impl(Rpp16f* srcPtrImage, RpptDescPtr srcDescPtr,
                                                      Rpp16f* dstPtrImage, RpptDescPtr dstDescPtr,
                                                      Rpp32f alpha, Rpp32f beta, RpptROI roi,
-                                                     RppLayoutParams layoutParams) {
+                                                     RppLayoutParams layoutParams, rpp::Handle& handle) {
     Rpp32u bufferLength = roi.xywhROI.roiWidth * layoutParams.bufferMultiplier;
 
     Rpp16f *srcPtrChannel, *dstPtrChannel;
@@ -565,16 +568,23 @@ static inline RppStatus brightness_f16_f16_host_impl(Rpp16f* srcPtrImage, RpptDe
     pBrightnessParams[1] = _mm_set1_ps(beta);
 #endif
 
+    bool enableRowParallelization = (srcDescPtr->n == 1 && dstDescPtr->n == 1);
+
+    if(enableRowParallelization) {
+        omp_set_dynamic(0);
+        omp_set_num_threads(handle.GetNumThreads());
+    }
+
     // Brightness with fused output-layout toggle (NHWC -> NCHW)
     if ((srcDescPtr->c == 3) && (srcDescPtr->layout == RpptLayout::NHWC) &&
         (dstDescPtr->layout == RpptLayout::NCHW)) {
-        Rpp16f *srcPtrRow, *dstPtrRowR, *dstPtrRowG, *dstPtrRowB;
-        srcPtrRow = srcPtrChannel;
-        dstPtrRowR = dstPtrChannel;
-        dstPtrRowG = dstPtrRowR + dstDescPtr->strides.cStride;
-        dstPtrRowB = dstPtrRowG + dstDescPtr->strides.cStride;
-
+        #pragma omp parallel for if(enableRowParallelization) schedule(static)
         for (int i = 0; i < roi.xywhROI.roiHeight; i++) {
+            Rpp16f *srcPtrRow = srcPtrChannel + i * srcDescPtr->strides.hStride;
+            Rpp16f *dstPtrRowR = dstPtrChannel + i * dstDescPtr->strides.hStride;
+            Rpp16f *dstPtrRowG = dstPtrRowR + dstDescPtr->strides.cStride;
+            Rpp16f *dstPtrRowB = dstPtrRowG + dstDescPtr->strides.cStride;
+
             Rpp16f *srcPtrTemp, *dstPtrTempR, *dstPtrTempG, *dstPtrTempB;
             srcPtrTemp = srcPtrRow;
             dstPtrTempR = dstPtrRowR;
@@ -634,13 +644,13 @@ static inline RppStatus brightness_f16_f16_host_impl(Rpp16f* srcPtrImage, RpptDe
     // Brightness with fused output-layout toggle (NCHW -> NHWC)
     else if ((srcDescPtr->c == 3) && (srcDescPtr->layout == RpptLayout::NCHW) &&
              (dstDescPtr->layout == RpptLayout::NHWC)) {
-        Rpp16f *srcPtrRowR, *srcPtrRowG, *srcPtrRowB, *dstPtrRow;
-        srcPtrRowR = srcPtrChannel;
-        srcPtrRowG = srcPtrRowR + srcDescPtr->strides.cStride;
-        srcPtrRowB = srcPtrRowG + srcDescPtr->strides.cStride;
-        dstPtrRow = dstPtrChannel;
-
+        #pragma omp parallel for if(enableRowParallelization) schedule(static)
         for (int i = 0; i < roi.xywhROI.roiHeight; i++) {
+            Rpp16f *srcPtrRowR = srcPtrChannel + i * srcDescPtr->strides.hStride;
+            Rpp16f *srcPtrRowG = srcPtrRowR + srcDescPtr->strides.cStride;
+            Rpp16f *srcPtrRowB = srcPtrRowG + srcDescPtr->strides.cStride;
+            Rpp16f *dstPtrRow = dstPtrChannel + i * dstDescPtr->strides.hStride;
+
             Rpp16f *srcPtrTempR, *srcPtrTempG, *srcPtrTempB, *dstPtrTemp;
             srcPtrTempR = srcPtrRowR;
             srcPtrTempG = srcPtrRowG;
@@ -702,12 +712,13 @@ static inline RppStatus brightness_f16_f16_host_impl(Rpp16f* srcPtrImage, RpptDe
     else {
         Rpp32u alignedLength = bufferLength & ~(vectorIncrementPerChannel - 1);
 
+        #pragma omp parallel for collapse(2) if(enableRowParallelization) schedule(static)
         for (int c = 0; c < layoutParams.channelParam; c++) {
-            Rpp16f *srcPtrRow, *dstPtrRow;
-            srcPtrRow = srcPtrChannel;
-            dstPtrRow = dstPtrChannel;
-
             for (int i = 0; i < roi.xywhROI.roiHeight; i++) {
+                Rpp16f *srcPtrChannel_c = srcPtrChannel + c * srcDescPtr->strides.cStride;
+                Rpp16f *dstPtrChannel_c = dstPtrChannel + c * dstDescPtr->strides.cStride;
+                Rpp16f *srcPtrRow = srcPtrChannel_c + i * srcDescPtr->strides.hStride;
+                Rpp16f *dstPtrRow = dstPtrChannel_c + i * dstDescPtr->strides.hStride;
                 Rpp16f *srcPtrTemp, *dstPtrTemp;
                 srcPtrTemp = srcPtrRow;
                 dstPtrTemp = dstPtrRow;
@@ -751,13 +762,7 @@ static inline RppStatus brightness_f16_f16_host_impl(Rpp16f* srcPtrImage, RpptDe
                     srcPtrTemp++;
                     dstPtrTemp++;
                 }
-
-                srcPtrRow += srcDescPtr->strides.hStride;
-                dstPtrRow += dstDescPtr->strides.hStride;
             }
-
-            srcPtrChannel += srcDescPtr->strides.cStride;
-            dstPtrChannel += dstDescPtr->strides.cStride;
         }
     }
 
@@ -783,7 +788,7 @@ RppStatus brightness_f16_f16_host_tensor(Rpp16f* srcPtr, RpptDescPtr srcDescPtr,
 
         brightness_f16_f16_host_impl(srcPtrImage, srcDescPtr, dstPtrImage, dstDescPtr,
                                      alphaTensor[batchCount], betaTensor[batchCount] * ONE_OVER_255,
-                                     roi, layoutParams);
+                                     roi, layoutParams, handle);
     }
 
     return RPP_SUCCESS;
@@ -792,7 +797,7 @@ RppStatus brightness_f16_f16_host_tensor(Rpp16f* srcPtr, RpptDescPtr srcDescPtr,
 static inline RppStatus brightness_i8_i8_host_impl(Rpp8s* srcPtrImage, RpptDescPtr srcDescPtr,
                                                    Rpp8s* dstPtrImage, RpptDescPtr dstDescPtr,
                                                    Rpp32f alpha, Rpp32f beta, RpptROI roi,
-                                                   RppLayoutParams layoutParams) {
+                                                   RppLayoutParams layoutParams, rpp::Handle& handle) {
     Rpp32u bufferLength = roi.xywhROI.roiWidth * layoutParams.bufferMultiplier;
 
     Rpp8s *srcPtrChannel, *dstPtrChannel;
@@ -803,6 +808,12 @@ static inline RppStatus brightness_i8_i8_host_impl(Rpp8s* srcPtrImage, RpptDescP
     Rpp32u alignedLength = (bufferLength / 48) * 48;
     Rpp32u vectorIncrement = 48;
     Rpp32u vectorIncrementPerChannel = 16;
+    bool enableRowParallelization = (srcDescPtr->n == 1 && dstDescPtr->n == 1);
+
+    if(enableRowParallelization) {
+        omp_set_dynamic(0);
+        omp_set_num_threads(handle.GetNumThreads());
+    }
 
 #if __AVX2__
     __m256 pBrightnessParams[2];
@@ -817,13 +828,13 @@ static inline RppStatus brightness_i8_i8_host_impl(Rpp8s* srcPtrImage, RpptDescP
     // Brightness with fused output-layout toggle (NHWC -> NCHW)
     if ((srcDescPtr->c == 3) && (srcDescPtr->layout == RpptLayout::NHWC) &&
         (dstDescPtr->layout == RpptLayout::NCHW)) {
-        Rpp8s *srcPtrRow, *dstPtrRowR, *dstPtrRowG, *dstPtrRowB;
-        srcPtrRow = srcPtrChannel;
-        dstPtrRowR = dstPtrChannel;
-        dstPtrRowG = dstPtrRowR + dstDescPtr->strides.cStride;
-        dstPtrRowB = dstPtrRowG + dstDescPtr->strides.cStride;
-
+        #pragma omp parallel for if(enableRowParallelization) schedule(static)
         for (int i = 0; i < roi.xywhROI.roiHeight; i++) {
+            Rpp8s *srcPtrRow = srcPtrChannel + i * srcDescPtr->strides.hStride;
+            Rpp8s *dstPtrRowR = dstPtrChannel + i * dstDescPtr->strides.hStride;
+            Rpp8s *dstPtrRowG = dstPtrRowR + dstDescPtr->strides.cStride;
+            Rpp8s *dstPtrRowB = dstPtrRowG + dstDescPtr->strides.cStride;
+
             Rpp8s *srcPtrTemp, *dstPtrTempR, *dstPtrTempG, *dstPtrTempB;
             srcPtrTemp = srcPtrRow;
             dstPtrTempR = dstPtrRowR;
@@ -871,13 +882,13 @@ static inline RppStatus brightness_i8_i8_host_impl(Rpp8s* srcPtrImage, RpptDescP
     // Brightness with fused output-layout toggle (NCHW -> NHWC)
     else if ((srcDescPtr->c == 3) && (srcDescPtr->layout == RpptLayout::NCHW) &&
              (dstDescPtr->layout == RpptLayout::NHWC)) {
-        Rpp8s *srcPtrRowR, *srcPtrRowG, *srcPtrRowB, *dstPtrRow;
-        srcPtrRowR = srcPtrChannel;
-        srcPtrRowG = srcPtrRowR + srcDescPtr->strides.cStride;
-        srcPtrRowB = srcPtrRowG + srcDescPtr->strides.cStride;
-        dstPtrRow = dstPtrChannel;
-
+        #pragma omp parallel for if(enableRowParallelization) schedule(static)
         for (int i = 0; i < roi.xywhROI.roiHeight; i++) {
+            Rpp8s *srcPtrRowR = srcPtrChannel + i * srcDescPtr->strides.hStride;
+            Rpp8s *srcPtrRowG = srcPtrRowR + srcDescPtr->strides.cStride;
+            Rpp8s *srcPtrRowB = srcPtrRowG + srcDescPtr->strides.cStride;
+            Rpp8s *dstPtrRow = dstPtrChannel + i * dstDescPtr->strides.hStride;
+
             Rpp8s *srcPtrTempR, *srcPtrTempG, *srcPtrTempB, *dstPtrTemp;
             srcPtrTempR = srcPtrRowR;
             srcPtrTempG = srcPtrRowG;
@@ -927,12 +938,13 @@ static inline RppStatus brightness_i8_i8_host_impl(Rpp8s* srcPtrImage, RpptDescP
     else {
         Rpp32u alignedLength = bufferLength & ~15;
 
+        #pragma omp parallel for collapse(2) if(enableRowParallelization) schedule(static)
         for (int c = 0; c < layoutParams.channelParam; c++) {
-            Rpp8s *srcPtrRow, *dstPtrRow;
-            srcPtrRow = srcPtrChannel;
-            dstPtrRow = dstPtrChannel;
-
             for (int i = 0; i < roi.xywhROI.roiHeight; i++) {
+                Rpp8s *srcPtrChannel_c = srcPtrChannel + c * srcDescPtr->strides.cStride;
+                Rpp8s *dstPtrChannel_c = dstPtrChannel + c * dstDescPtr->strides.cStride;
+                Rpp8s *srcPtrRow = srcPtrChannel_c + i * srcDescPtr->strides.hStride;
+                Rpp8s *dstPtrRow = dstPtrChannel_c + i * dstDescPtr->strides.hStride;
                 Rpp8s *srcPtrTemp, *dstPtrTemp;
                 srcPtrTemp = srcPtrRow;
                 dstPtrTemp = dstPtrRow;
@@ -963,13 +975,7 @@ static inline RppStatus brightness_i8_i8_host_impl(Rpp8s* srcPtrImage, RpptDescP
                     srcPtrTemp++;
                     dstPtrTemp++;
                 }
-
-                srcPtrRow += srcDescPtr->strides.hStride;
-                dstPtrRow += dstDescPtr->strides.hStride;
             }
-
-            srcPtrChannel += srcDescPtr->strides.cStride;
-            dstPtrChannel += dstDescPtr->strides.cStride;
         }
     }
     return RPP_SUCCESS;
@@ -994,7 +1000,7 @@ RppStatus brightness_i8_i8_host_tensor(Rpp8s* srcPtr, RpptDescPtr srcDescPtr, Rp
 
         brightness_i8_i8_host_impl(srcPtrImage, srcDescPtr, dstPtrImage, dstDescPtr,
                                    alphaTensor[batchCount], betaTensor[batchCount], roi,
-                                   layoutParams);
+                                   layoutParams, handle);
     }
 
     return RPP_SUCCESS;
@@ -1012,7 +1018,7 @@ RppStatus brightness_u8_u8_host_single_image(Rpp8u* srcPtr, RpptDescPtr srcDescP
     RpptROIPtr roiPtrInput = &roiTensorPtrSrc[0];
     compute_roi_validation_host(roiPtrInput, &roi, &roiDefault, roiType);
     return brightness_u8_u8_host_impl(srcPtr, srcDescPtr, dstPtr, dstDescPtr, alphaTensor[0],
-                                      betaTensor[0], roi, layoutParams);
+                                      betaTensor[0], roi, layoutParams, handle);
 }
 
 RppStatus brightness_f32_f32_host_single_image(Rpp32f* srcPtr, RpptDescPtr srcDescPtr,
@@ -1025,7 +1031,7 @@ RppStatus brightness_f32_f32_host_single_image(Rpp32f* srcPtr, RpptDescPtr srcDe
     RpptROIPtr roiPtrInput = &roiTensorPtrSrc[0];
     compute_roi_validation_host(roiPtrInput, &roi, &roiDefault, roiType);
     return brightness_f32_f32_host_impl(srcPtr, srcDescPtr, dstPtr, dstDescPtr, alphaTensor[0],
-                                        betaTensor[0] * ONE_OVER_255, roi, layoutParams);
+                                        betaTensor[0] * ONE_OVER_255, roi, layoutParams, handle);
 }
 
 RppStatus brightness_f16_f16_host_single_image(Rpp16f* srcPtr, RpptDescPtr srcDescPtr,
@@ -1038,7 +1044,7 @@ RppStatus brightness_f16_f16_host_single_image(Rpp16f* srcPtr, RpptDescPtr srcDe
     RpptROIPtr roiPtrInput = &roiTensorPtrSrc[0];
     compute_roi_validation_host(roiPtrInput, &roi, &roiDefault, roiType);
     return brightness_f16_f16_host_impl(srcPtr, srcDescPtr, dstPtr, dstDescPtr, alphaTensor[0],
-                                        betaTensor[0] * ONE_OVER_255, roi, layoutParams);
+                                        betaTensor[0] * ONE_OVER_255, roi, layoutParams, handle);
 }
 
 RppStatus brightness_i8_i8_host_single_image(Rpp8s* srcPtr, RpptDescPtr srcDescPtr, Rpp8s* dstPtr,
@@ -1051,5 +1057,5 @@ RppStatus brightness_i8_i8_host_single_image(Rpp8s* srcPtr, RpptDescPtr srcDescP
     RpptROIPtr roiPtrInput = &roiTensorPtrSrc[0];
     compute_roi_validation_host(roiPtrInput, &roi, &roiDefault, roiType);
     return brightness_i8_i8_host_impl(srcPtr, srcDescPtr, dstPtr, dstDescPtr, alphaTensor[0],
-                                      betaTensor[0], roi, layoutParams);
+                                      betaTensor[0], roi, layoutParams, handle);
 }

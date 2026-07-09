@@ -234,15 +234,18 @@ inline std::vector<size_t> sizes(size_t bytes_per_element)
   return result;
 }
 
-inline std::string format_pow2(size_t n)
+namespace detail
 {
-  unsigned int k = 0;
-  while (!(n & 1))
-  {
-    k++;
-    n >>= 1;
-  }
-  return "1 << " + std::to_string(k);
+void do_not_optimize(const void* ptr)
+{
+  (void) ptr;
+}
+} // namespace detail
+
+template <class T>
+void do_not_optimize(const T& val)
+{
+  detail::do_not_optimize(&val);
 }
 
 } // namespace bench_utils

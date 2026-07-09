@@ -36,16 +36,17 @@ struct equal_benchmark : public primbench::benchmark_interface
     thrust::device_vector<T> in(m_items, T{1});
     thrust::device_vector<T> out(m_items, T{1});
 
-    const auto same_elements = std::min(static_cast<std::size_t>(m_items * common_prefix_ratio), m_items);
+    const auto same_elements =
+      std::min(static_cast<size_t>(m_items * common_prefix_ratio), m_items);
 
     thrust::fill(policy(alloc), out.begin() + same_elements, out.end(), T{2});
 
-    state.set_items(std::max(same_elements, std::size_t(1)));
-    state.add_reads<T>(std::max(same_elements, std::size_t(1)));
-    state.add_writes<T>(std::max(same_elements, std::size_t(1)));
+    state.set_items(std::max(same_elements, size_t(1)));
+    state.add_reads<T>(std::max(same_elements, size_t(1)));
+    state.add_writes<T>(std::max(same_elements, size_t(1)));
 
     state.run([&] {
-      thrust::equal(policy(alloc), in.begin(), in.end(), out.begin());
+      bench_utils::do_not_optimize(thrust::equal(policy(alloc), in.begin(), in.end(), out.begin()));
     });
   }
 

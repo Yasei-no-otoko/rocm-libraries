@@ -147,6 +147,18 @@ inline void validate_or_throw(fft_io io, const std::string& func_name)
     }
 }
 
+inline fft_io other(fft_io io)
+{
+    validate_or_throw(io, "other");
+    return io == fft_io_in ? fft_io_out : fft_io_in;
+}
+
+inline std::string io_name(const fft_io& io)
+{
+    validate_or_throw(io, "io_name");
+    return io == fft_io_in ? "input" : "output";
+}
+
 template <>
 struct is_fft_enum<fft_io, true> : std::true_type
 {
@@ -322,6 +334,24 @@ inline void validate_enums_or_throw(const std::string& func_name, T val, Args...
     validate_or_throw(val, func_name);
     if constexpr(sizeof...(args) > 0)
         validate_enums_or_throw(func_name, args...);
+}
+
+inline std::string fft_transform_type_name(const fft_transform_type& transform_type)
+{
+    switch(transform_type)
+    {
+    case fft_transform_type_complex_forward:
+        return "fft_transform_type_complex_forward";
+    case fft_transform_type_complex_inverse:
+        return "fft_transform_type_complex_inverse";
+    case fft_transform_type_real_forward:
+        return "fft_transform_type_real_forward";
+    case fft_transform_type_real_inverse:
+        return "fft_transform_type_real_inverse";
+    default:
+        throw std::invalid_argument(
+            "Unexpected value of fft_transform_type given to fft_transform_type_name()");
+    }
 }
 
 #endif // FFT_ENUMS_H

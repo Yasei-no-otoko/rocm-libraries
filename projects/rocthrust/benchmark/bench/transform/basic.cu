@@ -122,7 +122,7 @@ struct transform_benchmark : public primbench::benchmark_interface
     state.add_writes<uint32_t>(m_items);
 
     state.run([&] {
-      thrust::transform(policy(alloc), in.cbegin(), in.cend(), out.begin(), op);
+      thrust::transform(policy(alloc).on(state.stream), in.cbegin(), in.cend(), out.begin(), op);
     });
   }
 
@@ -286,7 +286,7 @@ struct transform_babel_benchmark : public primbench::benchmark_interface
     state.add_writes<T>(m_items * OpT::writes_per_item);
 
     state.run([&] {
-      OpT::run(policy(alloc), a, b, c);
+      OpT::run(policy(alloc).on(state.stream), a, b, c);
     });
   }
 

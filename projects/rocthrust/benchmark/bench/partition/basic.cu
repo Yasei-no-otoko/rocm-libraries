@@ -81,7 +81,7 @@ struct partition_benchmark : public primbench::benchmark_interface
 
     state.run([&] {
       thrust::partition_copy(
-        policy(alloc),
+        policy(alloc).on(state.stream),
         in.cbegin(),
         in.cend(),
         out.begin(),

@@ -68,7 +68,7 @@ struct adjacent_difference_benchmark : public primbench::benchmark_interface
     state.add_writes<T>(m_items);
 
     state.run([&] {
-      thrust::adjacent_difference(policy(alloc), in.cbegin(), in.cend(), out.begin(), custom_op);
+      thrust::adjacent_difference(policy(alloc).on(state.stream), in.cbegin(), in.cend(), out.begin(), custom_op);
     });
   }
 

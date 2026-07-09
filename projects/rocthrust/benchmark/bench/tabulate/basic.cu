@@ -79,7 +79,7 @@ struct tabulate_benchmark : public primbench::benchmark_interface
     state.add_writes<T>(m_items + 1);
 
     state.run([&] {
-      thrust::tabulate(policy(alloc), out.begin(), out.end(), op);
+      thrust::tabulate(policy(alloc).on(state.stream), out.begin(), out.end(), op);
     });
   }
 
@@ -96,7 +96,7 @@ int main(int argc, char* argv[])
   primbench::settings settings;
   settings.size                 = 1; // bench_utils::sizes() calculates it later.
   settings.min_gpu_ms_per_batch = 50;
-  settings.batch_window_size = 5;
+  settings.batch_window_size    = 5;
   primbench::executor executor(argc, argv, settings, primbench::flags::sync);
 
   QUEUE(uint32_t)

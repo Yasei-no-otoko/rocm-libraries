@@ -91,7 +91,7 @@ struct copy_benchmark : public primbench::benchmark_interface
     state.add_writes<T>(m_items);
 
     state.run([&] {
-      thrust::copy(policy(alloc), in.cbegin(), in.cend(), out.begin());
+      thrust::copy(policy(alloc).on(state.stream), in.cbegin(), in.cend(), out.begin());
     });
   }
 

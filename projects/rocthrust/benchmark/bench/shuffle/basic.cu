@@ -67,7 +67,7 @@ struct shuffle_benchmark : public primbench::benchmark_interface
     thrust::device_vector<T> data(m_items);
     auto do_engine = [&](auto&& engine_constructor) {
       state.run([&] {
-        thrust::shuffle(policy, data.begin(), data.end(), engine_constructor());
+        thrust::shuffle(policy(alloc).on(state.stream), data.begin(), data.end(), engine_constructor());
       });
     };
 

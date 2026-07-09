@@ -61,7 +61,7 @@ struct reduce_benchmark : public primbench::benchmark_interface
     state.add_reads<T>(m_items + 1);
 
     state.run([&] {
-      thrust::reduce(policy(alloc), in.begin(), in.end());
+      thrust::reduce(policy(alloc).on(state.stream), in.begin(), in.end());
     });
   }
 

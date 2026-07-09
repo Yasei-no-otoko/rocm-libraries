@@ -71,7 +71,7 @@ struct sort_benchmark : public primbench::benchmark_interface
     state.add_writes<K>(m_items);
 
     state.run([&] {
-      thrust::sort_by_key(policy(alloc), keys.begin(), keys.end(), vals.begin(), bench_utils::less_t{});
+      thrust::sort_by_key(policy(alloc).on(state.stream), keys.begin(), keys.end(), vals.begin(), bench_utils::less_t{});
     });
   }
 

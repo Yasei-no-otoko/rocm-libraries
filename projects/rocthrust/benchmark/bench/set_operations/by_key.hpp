@@ -80,7 +80,7 @@ struct by_key_set_benchmark : public primbench::benchmark_interface
 
     // not a warm-up run, we need to run once to determine the size of the output
     auto result_ends = op(
-      policy(alloc),
+      policy(alloc).on(state.stream),
       in_keys.cbegin(),
       in_keys.cbegin() + items_in_A,
       in_keys.cbegin() + items_in_A,
@@ -90,7 +90,7 @@ struct by_key_set_benchmark : public primbench::benchmark_interface
       out_keys.begin(),
       out_vals.begin());
 
-    const size_t item_in_AB = thrust::distance(out_keys.begin(), result_ends.first);
+    const size_t item_in_AB  = thrust::distance(out_keys.begin(), result_ends.first);
     const size_t values_read = OpT::read_all_values ? m_items : items_in_A;
 
     state.set_items(m_items);
@@ -100,7 +100,7 @@ struct by_key_set_benchmark : public primbench::benchmark_interface
     state.add_writes<K>(item_in_AB);
 
     state.run([&] {
-      op(policy(alloc),
+      op(policy(alloc).on(state.stream),
          in_keys.cbegin(),
          in_keys.cbegin() + items_in_A,
          in_keys.cbegin() + items_in_A,

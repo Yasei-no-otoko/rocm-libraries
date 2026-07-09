@@ -71,7 +71,8 @@ struct transform_reduce_benchmark : public primbench::benchmark_interface
     state.add_writes<T>(1);
 
     state.run([&] {
-      thrust::transform_reduce(policy(alloc), in.begin(), in.end(), square_t<T>{}, T{}, thrust::plus<T>{});
+      thrust::transform_reduce(
+        policy(alloc).on(state.stream), in.begin(), in.end(), square_t<T>{}, T{}, thrust::plus<T>{});
     });
   }
 

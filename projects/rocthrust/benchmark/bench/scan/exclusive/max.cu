@@ -63,7 +63,8 @@ struct exclusive_scan_benchmark : public primbench::benchmark_interface
     state.add_writes<T>(m_items);
 
     state.run([&] {
-      thrust::exclusive_scan(policy(alloc), in.cbegin(), in.cend(), out.begin(), T{}, bench_utils::max_t{});
+      thrust::exclusive_scan(
+        policy(alloc).on(state.stream), in.cbegin(), in.cend(), out.begin(), T{}, bench_utils::max_t{});
     });
   }
 

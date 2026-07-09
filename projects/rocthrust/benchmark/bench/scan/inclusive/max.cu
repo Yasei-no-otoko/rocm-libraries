@@ -63,7 +63,8 @@ struct inclusive_scan_benchmark : public primbench::benchmark_interface
     state.add_writes<T>(m_items);
 
     state.run([&] {
-      thrust::inclusive_scan(policy(alloc), in.cbegin(), in.cend(), out.begin(), T{}, bench_utils::max_t{});
+      thrust::inclusive_scan(
+        policy(alloc).on(state.stream), in.cbegin(), in.cend(), out.begin(), T{}, bench_utils::max_t{});
     });
   }
 

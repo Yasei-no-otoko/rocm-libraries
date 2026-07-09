@@ -69,7 +69,12 @@ struct vectorized_search_benchmark : public primbench::benchmark_interface
 
     state.run([&] {
       thrust::lower_bound(
-        policy(alloc), data.begin(), data.begin() + m_items, data.begin() + m_items, data.end(), result.begin());
+        policy(alloc).on(state.stream),
+        data.begin(),
+        data.begin() + m_items,
+        data.begin() + m_items,
+        data.end(),
+        result.begin());
     });
   }
 

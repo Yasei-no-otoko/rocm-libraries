@@ -63,7 +63,7 @@ struct fill_benchmark : public primbench::benchmark_interface
     state.add_writes<T>(m_items);
 
     state.run([&] {
-      thrust::fill(policy(alloc), out.begin(), out.end(), T{VAL});
+      thrust::fill(policy(alloc).on(state.stream), out.begin(), out.end(), T{VAL});
     });
   }
 

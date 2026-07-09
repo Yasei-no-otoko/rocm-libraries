@@ -63,7 +63,7 @@ struct inner_product_benchmark : public primbench::benchmark_interface
     state.add_writes<T>(m_items + 1);
 
     state.run([&] {
-      thrust::inner_product(policy(alloc), lhs.begin(), lhs.end(), rhs.begin(), T{0});
+      thrust::inner_product(policy(alloc).on(state.stream), lhs.begin(), lhs.end(), rhs.begin(), T{0});
     });
   }
 

@@ -75,7 +75,12 @@ struct merge_benchmark : public primbench::benchmark_interface
 
     state.run([&] {
       thrust::merge(
-        policy(alloc), in.cbegin(), in.cbegin() + items_in_lhs, in.cbegin() + items_in_lhs, in.cend(), out.begin());
+        policy(alloc).on(state.stream),
+        in.cbegin(),
+        in.cbegin() + items_in_lhs,
+        in.cbegin() + items_in_lhs,
+        in.cend(),
+        out.begin());
     });
   }
 

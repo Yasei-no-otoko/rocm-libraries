@@ -82,7 +82,12 @@ struct reduce_benchmark : public primbench::benchmark_interface
 
     state.run([&] {
       thrust::reduce_by_key(
-        policy(alloc), in_keys.begin(), in_keys.end(), in_vals.begin(), out_keys.begin(), out_vals.begin());
+        policy(alloc).on(state.stream),
+        in_keys.begin(),
+        in_keys.end(),
+        in_vals.begin(),
+        out_keys.begin(),
+        out_vals.begin());
     });
   }
 

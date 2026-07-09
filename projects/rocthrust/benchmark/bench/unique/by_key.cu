@@ -84,7 +84,12 @@ struct unique_benchmark : public primbench::benchmark_interface
 
     // not a warm-up run, we need to run once to determine the size of the output
     const auto [new_key_end, new_val_end] = thrust::unique_by_key_copy(
-      policy(alloc), in_keys.cbegin(), in_keys.cend(), in_vals.cbegin(), out_keys.begin(), out_vals.begin());
+      policy(alloc).on(state.stream),
+      in_keys.cbegin(),
+      in_keys.cend(),
+      in_vals.cbegin(),
+      out_keys.begin(),
+      out_vals.begin());
 
     const size_t unique_elements = thrust::distance(out_keys.begin(), new_key_end);
 
@@ -97,7 +102,12 @@ struct unique_benchmark : public primbench::benchmark_interface
 
     state.run([&] {
       thrust::unique_by_key_copy(
-        policy(alloc), in_keys.cbegin(), in_keys.cend(), in_vals.cbegin(), out_keys.begin(), out_vals.begin());
+        policy(alloc).on(state.stream),
+        in_keys.cbegin(),
+        in_keys.cend(),
+        in_vals.cbegin(),
+        out_keys.begin(),
+        out_vals.begin());
     });
   }
 

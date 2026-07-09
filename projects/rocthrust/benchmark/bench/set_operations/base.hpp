@@ -76,7 +76,12 @@ struct base_set_benchmark : public primbench::benchmark_interface
 
     // not a warm-up run, we need to run once to determine the size of the output
     const auto result_ends =
-      op(policy(alloc), in.cbegin(), in.cbegin() + items_in_A, in.cbegin() + items_in_A, in.cend(), out.begin());
+      op(policy(alloc).on(state.stream),
+         in.cbegin(),
+         in.cbegin() + items_in_A,
+         in.cbegin() + items_in_A,
+         in.cend(),
+         out.begin());
 
     const size_t items_in_AB = thrust::distance(out.begin(), result_ends);
 
@@ -85,7 +90,12 @@ struct base_set_benchmark : public primbench::benchmark_interface
     state.add_writes<T>(items_in_AB);
 
     state.run([&] {
-      op(policy(alloc), in.cbegin(), in.cbegin() + items_in_A, in.cbegin() + items_in_A, in.cend(), out.begin());
+      op(policy(alloc).on(state.stream),
+         in.cbegin(),
+         in.cbegin() + items_in_A,
+         in.cbegin() + items_in_A,
+         in.cend(),
+         out.begin());
     });
   }
 

@@ -63,7 +63,7 @@ struct for_each_benchmark : public primbench::benchmark_interface
     state.add_writes<T>(m_items);
 
     state.run([&] {
-      thrust::for_each(policy(alloc), in.begin(), in.end(), op);
+      thrust::for_each(policy(alloc).on(state.stream), in.begin(), in.end(), op);
     });
   }
 

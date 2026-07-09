@@ -997,6 +997,14 @@ class Solution(collections.abc.Mapping):
     # Skip GRVW range check for subtile impl: scale uses serial*loadWidth DTL addressing, not standard GRVW chunks
     if grvw not in [1,2,4,8,16,32] and not state["UseSubtileImpl"]:
       validDepthU = False
+    # TDM uses tensor_load_to_lds (not per-thread buffer_load), so
+    # GlobalReadVectorWidth and NumLoads are meaningless — set to 1.
+    usesTDM = tc in ("A", "B", "MXSA", "MXSB") and state["TDMInst"] == 3
+    if usesTDM:
+      state["GlobalReadVectorWidth%s"%tc] = 1
+      state["NumLoads%s"%tc] = 1
+      return validDepthU
+
     if totalVectors % state["NumThreads"] != 0:
       reject(state, printRejectionReason, "totalVectors%s %u %% NumThreads %u != 0" \
           % (tc, totalVectors, state["NumThreads"]))

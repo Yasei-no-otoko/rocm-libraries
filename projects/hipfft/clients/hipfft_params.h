@@ -38,6 +38,12 @@
 #include "hipfft/hipfftMp.h"
 #include <mpi.h>
 #endif
+// plan handles are pointers for rocFFT backend, and ints for cuFFT
+#ifdef __HIP_PLATFORM_AMD__
+static constexpr hipfftHandle INVALID_HIPFFT_PLAN_HANDLE = nullptr;
+#else
+static constexpr hipfftHandle INVALID_HIPFFT_PLAN_HANDLE = -1;
+#endif
 
 // hipfftXtMalloc takes (plan, &desc, format) but hip_object_wrapper_t expects TCreate(&obj, ...).
 // This adapter reorders the arguments to match.
@@ -47,7 +53,11 @@ inline hipfftResult
     return hipfftXtMalloc(plan, desc, fmt);
 }
 // RAII wrappers for hipFFT handles and Xt descriptors
-typedef hip_object_wrapper_t<hipfftHandle, hipfftCreate, hipfftDestroy, HIPFFT_SUCCESS>
+typedef hip_object_wrapper_t<hipfftHandle,
+                             hipfftCreate,
+                             hipfftDestroy,
+                             HIPFFT_SUCCESS,
+                             INVALID_HIPFFT_PLAN_HANDLE>
     hipfftHandle_wrapper_t;
 typedef hip_object_wrapper_t<hipLibXtDesc*, hipfftXtMalloc_adapted, hipfftXtFree, HIPFFT_SUCCESS>
     hipfftLibXtDesc_wrapper_t;
@@ -126,14 +136,7 @@ inline std::string hipfftResult_string(const hipfftResult_t val)
 class hipfft_params : public fft_params
 {
 public:
-    // plan handles are pointers for rocFFT backend, and ints for cuFFT
-#ifdef __HIP_PLATFORM_AMD__
-    static constexpr hipfftHandle INVALID_PLAN_HANDLE = nullptr;
-#else
-    static constexpr hipfftHandle INVALID_PLAN_HANDLE = -1;
-#endif
-
-    hipfftHandle plan = INVALID_PLAN_HANDLE;
+    hipfftHandle plan = INVALID_HIPFFT_PLAN_HANDLE;
     // keep track of token to check when attempting to create new plan
     std::string current_token;
 
@@ -193,7 +196,7 @@ public:
     // Copy constructor: copies all configuration but not plan handles or multi-GPU state
     hipfft_params(const hipfft_params& p)
         : fft_params(static_cast<const fft_params&>(p))
-        , plan(INVALID_PLAN_HANDLE)
+        , plan(INVALID_HIPFFT_PLAN_HANDLE)
         , current_token() // no valid current_token yet (in copy) since plan is not copied
         , hipfft_transform_type(p.hipfft_transform_type)
         , inputType(p.inputType)
@@ -217,10 +220,10 @@ public:
 
     void free()
     {
-        if(plan != INVALID_PLAN_HANDLE)
+        if(plan != INVALID_HIPFFT_PLAN_HANDLE)
         {
             hipfftDestroy(plan);
-            plan = INVALID_PLAN_HANDLE;
+            plan = INVALID_HIPFFT_PLAN_HANDLE;
         }
         xt_input.free();
         xt_output.free();
@@ -418,10 +421,10 @@ public:
         }
         else
         {
-            if(plan != INVALID_PLAN_HANDLE)
+            if(plan != INVALID_HIPFFT_PLAN_HANDLE)
             {
                 hipfftDestroy(plan);
-                plan = INVALID_PLAN_HANDLE;
+                plan = INVALID_HIPFFT_PLAN_HANDLE;
             }
         }
 
@@ -510,7 +513,7 @@ public:
 
     hipfftResult_t set_stream(hipStream_t stream)
     {
-        if(plan == INVALID_PLAN_HANDLE)
+        if(plan == INVALID_HIPFFT_PLAN_HANDLE)
             throw std::runtime_error("Plan must be created before setting a desired stream");
         return hipfftSetStream(plan, stream);
     }
@@ -915,7 +918,7 @@ private:
             switch(dim())
             {
             case 1:
-                if(plan == INVALID_PLAN_HANDLE)
+                if(plan == INVALID_HIPFFT_PLAN_HANDLE)
                     ret = hipfftEstimate1d(
                         int_length[0], *hipfft_transform_type, nbatch, worksize_estimate.data());
                 else
@@ -926,7 +929,7 @@ private:
                                           worksize_estimate.data());
                 break;
             case 2:
-                if(plan == INVALID_PLAN_HANDLE)
+                if(plan == INVALID_HIPFFT_PLAN_HANDLE)
                     ret = hipfftEstimate2d(int_length[0],
                                            int_length[1],
                                            *hipfft_transform_type,
@@ -939,7 +942,7 @@ private:
                                           worksize_estimate.data());
                 break;
             case 3:
-                if(plan == INVALID_PLAN_HANDLE)
+                if(plan == INVALID_HIPFFT_PLAN_HANDLE)
                     ret = hipfftEstimate3d(int_length[0],
                                            int_length[1],
                                            int_length[2],
@@ -961,7 +964,7 @@ private:
         case CREATE_MAKE_PLAN_MANY:
         {
             auto layout_args = get_advanced_layout_args<int>();
-            if(plan == INVALID_PLAN_HANDLE)
+            if(plan == INVALID_HIPFFT_PLAN_HANDLE)
                 ret = hipfftEstimateMany(
                     dim(),
                     int_length.data(),
@@ -992,7 +995,7 @@ private:
         }
         case CREATE_MAKE_PLAN_MANY64:
         {
-            if(plan == INVALID_PLAN_HANDLE)
+            if(plan == INVALID_HIPFFT_PLAN_HANDLE)
             {
                 // no direct equivalent in estimate-fetching APIs
                 std::for_each(worksize_estimate.begin(),
@@ -1022,7 +1025,7 @@ private:
         }
         case CREATE_XT_MAKE_PLAN_MANY:
         {
-            if(plan == INVALID_PLAN_HANDLE)
+            if(plan == INVALID_HIPFFT_PLAN_HANDLE)
             {
                 // no direct equivalent in estimate-fetching APIs
                 std::for_each(worksize_estimate.begin(),
@@ -1072,7 +1075,7 @@ private:
             // the estimate can't have any knowledge about the number of GPUs being used if
             // the plan wasn't created first
             const size_t num_values_to_check
-                = plan == INVALID_PLAN_HANDLE ? 1 : worksize_estimate.size();
+                = plan == INVALID_HIPFFT_PLAN_HANDLE ? 1 : worksize_estimate.size();
             for(size_t idx = 0; ret == HIPFFT_SUCCESS && idx < num_values_to_check; idx++)
             {
                 ret = worksize_estimate[idx] != absurd_init_worksize_estimate

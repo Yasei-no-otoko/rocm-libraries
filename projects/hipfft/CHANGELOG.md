@@ -5,6 +5,24 @@ Documentation for hipFFT is available at
 
 ## Since last release (ROCm 7.14)
 
+### Changed
+
+* Modified the rocFFT backend's implementation details of hipFFT so that cuFFT backend's
+  behavior is matched for multi-device plans configured via `hipfftMakePlan{2,3}d`, with
+  respect to data distribution within descriptors.  Behaviors are now aligned for unbatched,
+  in-place, multi-dimensional transforms.
+  The following multi-device use cases remain unimplemented for rocFFT backend, pending
+  further analyses of the exact behavior(s) to be aligning with:
+  - batched multi-dimensional transforms of any kind and precision;
+  - unbatched one-dimensional transforms of any kind and precision;
+  - out-of-place transforms of any kind and precision.
+  As a result, expect `HIPFFT_NOT_IMPLEMENTED` error codes to be returned by `hipfftMakePlanMany`
+  and `hipfftMakePlan1d` plan initialization function, if several devices were set prior
+  for the given plan, via `hipfftXtSetGPUs`. Similarly, expect `HIPFFT_NOT_IMPLEMENTED` from
+  `hipfftXtMalloc` when/if requesting the allocation of a descriptor with any of
+  `HIPFFT_XT_FORMAT_INPUT`, `HIPFFT_XT_FORMAT_OUTPUT` or `HIPFFT_XT_FORMAT_1D_INPUT_SHUFFLED`
+  as a sub-format.
+
 ## hipFFT 1.0.24 for ROCm 7.14
 
 ### Added

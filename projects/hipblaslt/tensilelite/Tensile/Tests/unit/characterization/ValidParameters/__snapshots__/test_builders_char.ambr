@@ -1481,6 +1481,7 @@
     'StreamKFixupTreeReduction',
     'StreamKForceDPOnly',
     'StreamKWorkStealing',
+    'StreamKWorkStealingRelaxed',
     'StreamKXCCMapping',
     'SuppressNoLoadLoop',
     'SwInstructionPrefetch',
@@ -2578,6 +2579,14 @@
       'type': 'list',
     }),
     'StreamKWorkStealing': dict({
+      'head': list([
+        0,
+        1,
+      ]),
+      'len': 2,
+      'type': 'list',
+    }),
+    'StreamKWorkStealingRelaxed': dict({
       'head': list([
         0,
         1,

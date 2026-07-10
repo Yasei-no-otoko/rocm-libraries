@@ -45,7 +45,7 @@ struct equal_benchmark : public primbench::benchmark_interface
     state.add_writes<T>(std::max(same_elements, size_t(1)));
 
     state.run([&] {
-      bench_utils::do_not_optimize(thrust::equal(policy(alloc).on(state.stream), in.begin(), in.end(), out.begin()));
+      thrust::equal(policy(alloc).on(state.stream), in.begin(), in.end(), out.begin());
     });
   }
 

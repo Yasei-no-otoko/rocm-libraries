@@ -234,20 +234,6 @@ inline std::vector<size_t> sizes(size_t bytes_per_element)
   return result;
 }
 
-namespace detail
-{
-void do_not_optimize(const void* ptr)
-{
-  (void) ptr;
-}
-} // namespace detail
-
-template <class T>
-void do_not_optimize(const T& val)
-{
-  detail::do_not_optimize(&val);
-}
-
 } // namespace bench_utils
 
 PRIMBENCH_REGISTER_TYPE(int8_t, "i8")

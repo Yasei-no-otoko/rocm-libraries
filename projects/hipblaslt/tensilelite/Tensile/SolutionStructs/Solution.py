@@ -1673,6 +1673,11 @@ class Solution(collections.abc.Mapping):
         if state["StreamKAtomic"]:
           reject(state, printRejectionReason,
                  "StreamKWorkStealing is not supported with StreamKAtomic")
+      else:
+        # StreamKWorkStealingRelaxed only tunes the steal decision, so it is
+        # meaningless without work stealing. Clear it (rather than reject) so it
+        # never perturbs the kernel identity when stealing is off.
+        state["StreamKWorkStealingRelaxed"] = 0
       if not state["Valid"]:
         print2("in assignDerivedParameters, state['Valid'] = False")
         return
@@ -1681,6 +1686,7 @@ class Solution(collections.abc.Mapping):
       state["StreamKForceDPOnly"] = 0
       state["StreamKAtomic"] = 0
       state["StreamKWorkStealing"] = 0
+      state["StreamKWorkStealingRelaxed"] = 0
       state["StreamKXCCMapping"] = 0
       state["StreamKFixupTreeReduction"] = 0
       state["DebugStreamK"] = 0
@@ -2683,6 +2689,7 @@ class Solution(collections.abc.Mapping):
         "StreamK": not state["StreamK"],
         "StreamKAtomic": not state["StreamKAtomic"],
         "StreamKWorkStealing": not state["StreamKWorkStealing"],
+        "StreamKWorkStealingRelaxed": not state["StreamKWorkStealingRelaxed"],
         "StreamKXCCMapping": not state["StreamKXCCMapping"],
         "StreamKFixupTreeReduction": not state["StreamKFixupTreeReduction"],
         "DebugStreamK": not state["DebugStreamK"],

@@ -344,7 +344,7 @@ def _install_blis(c, build_dir: Path):
         "keep_build_tmp": "Keep the temporary build artifacts.",
         "experimental": "Include 'Experimental' logic directories.",
         "logic_filter": "Logic YAML filter (e.g. 'gfx942/Equality/*').",
-        "streamk_ws_mode": "StreamK work-stealing codegen mode: 'off' or 'only'.",
+        "streamk_ws_mode": "StreamK work-stealing codegen mode: 'off', 'only', or 'relaxed'.",
         "legacy_hipblas_direct": "Enable legacy HIPBLAS_DIRECT mode.",
         "disable_marker": "Disable hipBLASLt markers.",
         "enable_tensile_marker": "Enable Tensile markers.",
@@ -448,9 +448,9 @@ def build(
         sys.exit(2)
 
     # Reject typos so an unintended value can't silently default to "off" and
-    # build the wrong (no-WS vs WS-only) device library.
-    if streamk_ws_mode and streamk_ws_mode.lower() not in ("off", "only"):
-        print("--streamk-ws-mode must be 'off' or 'only'")
+    # build the wrong (no-WS vs WS-only vs relaxed-WS) device library.
+    if streamk_ws_mode and streamk_ws_mode.lower() not in ("off", "only", "relaxed"):
+        print("--streamk-ws-mode must be 'off', 'only', or 'relaxed'")
         sys.exit(2)
 
     # PATH setup — use os.pathsep (';' on Windows, ':' on Linux)

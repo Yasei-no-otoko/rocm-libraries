@@ -7,7 +7,7 @@ set(TENSILELITE_BUILD_PARALLEL_LEVEL "" CACHE STRING "Number of CPU cores to use
 set(TENSILELITE_KEEP_BUILD_TMP OFF CACHE STRING "Keep temporary build directory for device libraries (turning this ON  bloat the build size).")
 set(TENSILELITE_ASM_DEBUG "" CACHE STRING "Keep debug information for built code objects.")
 set(TENSILELITE_LOGIC_FILTER "" CACHE STRING "Cutomsized logic filter, default is *, i.e. all logics.")
-set(TENSILELITE_STREAMK_WS_MODE "" CACHE STRING "StreamK work-stealing codegen mode (off|only); empty uses the TensileCreateLibrary default.")
+set(TENSILELITE_STREAMK_WS_MODE "" CACHE STRING "StreamK work-stealing codegen mode (off|only|relaxed); empty uses the TensileCreateLibrary default.")
 set(TENSILELITE_NO_COMPRESS "" CACHE STRING "Do not compress device code object files.")
 set(TENSILELITE_EXPERIMENTAL "" CACHE STRING "Process experimental logic files.")
 set(TENSILELITE_ENABLE_ASM_COMMENTS OFF CACHE STRING "Turn on asm comments when building gemm libraries.")

@@ -592,11 +592,14 @@ def parseLibraryLogicData(
                          )
         return solutionObject
 
-    # StreamK work-stealing (WS) codegen mode for SK4/SK5 solutions. Binary
-    # choice producing two separate device libraries:
-    #   "off"  -> leave solutions as-is (WS=0), no forking; the no-WS library.
-    #   "only" -> flip matching solutions to WS=1 in place (no duplicates, no
-    #             table changes); the WS-only library.
+    # StreamK work-stealing (WS) codegen mode for SK4/SK5 solutions. Selects
+    # among separate device libraries:
+    #   "off"     -> leave solutions as-is (WS=0), no forking; the no-WS library.
+    #   "only"    -> flip matching solutions to WS=1 in place (no duplicates, no
+    #                table changes); the WS-only library.
+    #   "relaxed" -> like "only" (flip matching solutions to WS=1) but also set
+    #                StreamKWorkStealingRelaxed=1 so the neighbor "has-no-extra"
+    #                steal guard is dropped; the relaxed-WS library.
     # Default (unset/empty/unrecognized) is "off". TENSILE_STREAMK_WS_MODE takes
     # precedence; otherwise fall back to the deprecated alias
     # TENSILE_GENERATE_STREAMK_WS_VARIANTS ("0" -> off, "1" -> only).
@@ -611,17 +614,19 @@ def parseLibraryLogicData(
             wsMode = "off"
     else:
         wsMode = wsMode.lower()
-    if wsMode not in ("off", "only"):
+    if wsMode not in ("off", "only", "relaxed"):
         sys.stderr.write("WARNING: unrecognized TENSILE_STREAMK_WS_MODE "
                          "'{}'; defaulting to 'off'.\n".format(wsMode))
         wsMode = "off"
 
-    if wsMode == "only":
+    if wsMode in ("only", "relaxed"):
         for sol in data["Solutions"]:
             if (sol.get("StreamK") in (4, 5)
                     and sol.get("StreamKAtomic", 0) == 0
                     and sol.get("StreamKWorkStealing", 0) == 0):
                 sol["StreamKWorkStealing"] = 1
+                if wsMode == "relaxed":
+                    sol["StreamKWorkStealingRelaxed"] = 1
 
     solutions = [solutionStateToSolution(solutionState, assembler, isaInfoMap) for solutionState in data["Solutions"]]
     typeMismatches = getTypeMismatchCollector()

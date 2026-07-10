@@ -207,6 +207,12 @@ class TestValidParameters:
     def test_work_stealing_param_is_zero_one(self):
         assert validParameters["StreamKWorkStealing"] == [0, 1]
 
+    def test_relaxed_param_exists(self):
+        assert "StreamKWorkStealingRelaxed" in validParameters
+
+    def test_relaxed_param_is_zero_one(self):
+        assert validParameters["StreamKWorkStealingRelaxed"] == [0, 1]
+
 
 # ===========================================================================
 # 2. The three new StreamK helper methods exist and are callable.
@@ -261,14 +267,14 @@ class TestStealEmission:
     neighbor having no structural extra, then a single auto-reset-disabled
     atomic increment against the stolen queue."""
 
-    def _emit(self):
+    def _emit(self, kernel=None):
         sk = _stream_k_instance(4)
         writer = _FakeWriter()
         module = Module("steal")
         sQueueIdx = writer.sgprPool.checkOut(1, "queueIdx")
         sWorkItemIdx = writer.sgprPool.checkOut(1, "workItemIdx")
         sk.streamKWorkStealingSteal(
-            writer, module, {}, sQueueIdx, sWorkItemIdx, _mk_label
+            writer, module, {} if kernel is None else kernel, sQueueIdx, sWorkItemIdx, _mk_label
         )
         return _flat(module)
 
@@ -288,6 +294,19 @@ class TestStealEmission:
         assert any(isinstance(i, SCmpGeU32) for i in items), (
             "expected a >= remainder guard so a neighbor without a structural "
             "extra is not robbed"
+        )
+
+    def test_relaxed_omits_neighbor_extra_guard(self):
+        # The neighbor "has no structural extra" guard is the only SCmpGeU32 in
+        # the steal sequence: the original policy must keep it, and the relaxed
+        # policy must drop it so an idle WG steals regardless of the neighbor.
+        original = self._emit({"StreamKWorkStealingRelaxed": 0})
+        relaxed = self._emit({"StreamKWorkStealingRelaxed": 1})
+        assert any(isinstance(i, SCmpGeU32) for i in original), (
+            "original policy must keep the neighbor >= remainder guard"
+        )
+        assert not any(isinstance(i, SCmpGeU32) for i in relaxed), (
+            "relaxed policy must omit the neighbor >= remainder guard"
         )
 
     def test_exactly_one_atomic_increment(self):
@@ -414,9 +433,11 @@ class TestSolutionValidation:
 
 
 # ===========================================================================
-# 5. parseLibraryLogicData WS codegen toggle: TENSILE_STREAMK_WS_MODE is now a
-#    BINARY choice (off / only) + the deprecated legacy alias
-#    TENSILE_GENERATE_STREAMK_WS_VARIANTS ("0" -> off, "1" -> only).
+# 5. parseLibraryLogicData WS codegen toggle: TENSILE_STREAMK_WS_MODE is a
+#    three-way choice (off / only / relaxed) + the deprecated legacy alias
+#    TENSILE_GENERATE_STREAMK_WS_VARIANTS ("0" -> off, "1" -> only). "relaxed"
+#    flips eligible solutions like "only" and additionally sets
+#    StreamKWorkStealingRelaxed=1 (drops the neighbor has-no-extra guard).
 #
 #    The flip happens inline in parseLibraryLogicData *before* the heavy
 #    Solution construction (which needs an assembler / isaInfoMap / GPU). To
@@ -431,9 +452,9 @@ def _extract_ws_mode_applier():
     run on a tiny synthetic ``data`` dict with no assembler or GPU.
 
     The block runs from the first ``wsMode = ...`` assignment through the
-    ``if wsMode == "only":`` flip loop. The production code emits deprecation /
-    unknown-mode warnings via ``sys.stderr.write``, so ``sys`` (and ``os`` for
-    the env lookups) must be present in the exec namespace.
+    ``if wsMode in ("only", "relaxed"):`` flip loop. The production code emits
+    deprecation / unknown-mode warnings via ``sys.stderr.write``, so ``sys``
+    (and ``os`` for the env lookups) must be present in the exec namespace.
     """
     tree = ast.parse(textwrap.dedent(inspect.getsource(parseLibraryLogicData)))
     funcdef = next(n for n in tree.body if isinstance(n, ast.FunctionDef))
@@ -447,16 +468,22 @@ def _extract_ws_mode_applier():
             and any(isinstance(t, ast.Name) and t.id == "wsMode" for t in stmt.targets)
         ):
             start = i
-        # The binary dispatch: ``if wsMode == "only": ...`` (in-place flip).
+        # The flip dispatch: ``if wsMode in ("only", "relaxed"): ...`` (in-place
+        # flip). Matched by the ``in`` membership test whose options include
+        # "only"; the earlier ``if wsMode not in (...)`` guard uses ``NotIn`` and
+        # is intentionally skipped.
         if (
             isinstance(stmt, ast.If)
             and isinstance(stmt.test, ast.Compare)
             and isinstance(stmt.test.left, ast.Name)
             and stmt.test.left.id == "wsMode"
             and len(stmt.test.ops) == 1
-            and isinstance(stmt.test.ops[0], ast.Eq)
-            and isinstance(stmt.test.comparators[0], ast.Constant)
-            and stmt.test.comparators[0].value == "only"
+            and isinstance(stmt.test.ops[0], ast.In)
+            and isinstance(stmt.test.comparators[0], (ast.Tuple, ast.List))
+            and any(
+                isinstance(e, ast.Constant) and e.value == "only"
+                for e in stmt.test.comparators[0].elts
+            )
         ):
             end = i
     assert start is not None, "could not find the wsMode env resolution"
@@ -533,8 +560,10 @@ def _mk_freesize_data():
 
 
 class TestWorkStealingFlipMode:
-    """The binary off/only contract: ``off`` is a no-op; ``only`` flips eligible
-    SK4/SK5 solutions to WS=1 in place with no count growth and no table edits."""
+    """The off/only/relaxed contract: ``off`` is a no-op; ``only`` flips eligible
+    SK4/SK5 solutions to WS=1 in place with no count growth and no table edits;
+    ``relaxed`` flips like ``only`` and additionally sets
+    StreamKWorkStealingRelaxed=1 on those same eligible solutions."""
 
     def setup_method(self):
         self.apply = _extract_ws_mode_applier()
@@ -618,9 +647,67 @@ class TestWorkStealingFlipMode:
         self.apply(data)
         assert data == before
 
+    # -- relaxed ---------------------------------------------------------
+    def test_relaxed_flips_eligible_and_sets_relaxed_flag(self, monkeypatch):
+        monkeypatch.setenv("TENSILE_STREAMK_WS_MODE", "relaxed")
+        monkeypatch.delenv("TENSILE_GENERATE_STREAMK_WS_VARIANTS", raising=False)
+        data = _mk_matching_data()
+        orig_n = len(data["Solutions"])
+        table_before = deepcopy(data["Library"]["table"])
+        self.apply(data)
+
+        # No duplicates appended.
+        assert len(data["Solutions"]) == orig_n
+        # Eligible solutions (SK4/SK5, atomic=0, WS=0) flipped to WS=1 AND get
+        # StreamKWorkStealingRelaxed=1 in place.
+        for idx in _ELIGIBLE:
+            assert data["Solutions"][idx]["StreamKWorkStealing"] == 1
+            assert data["Solutions"][idx]["StreamKWorkStealingRelaxed"] == 1
+        # Ineligible untouched: no WS flip and no relaxed flag introduced.
+        assert data["Solutions"][_NON_STREAMK]["StreamKWorkStealing"] == 0
+        assert data["Solutions"][_ALREADY_WS]["StreamKWorkStealing"] == 1
+        assert data["Solutions"][_ATOMIC]["StreamKWorkStealing"] == 0
+        for idx in _INELIGIBLE:
+            assert data["Solutions"][idx].get("StreamKWorkStealingRelaxed", 0) == 0
+        # Table unchanged.
+        assert data["Library"]["table"] == table_before
+
+    def test_relaxed_is_case_insensitive(self, monkeypatch):
+        monkeypatch.setenv("TENSILE_STREAMK_WS_MODE", "ReLaXeD")
+        monkeypatch.delenv("TENSILE_GENERATE_STREAMK_WS_VARIANTS", raising=False)
+        data = _mk_matching_data()
+        self.apply(data)
+        for idx in _ELIGIBLE:
+            assert data["Solutions"][idx]["StreamKWorkStealing"] == 1
+            assert data["Solutions"][idx]["StreamKWorkStealingRelaxed"] == 1
+
+    def test_only_does_not_set_relaxed_flag(self, monkeypatch):
+        # "only" enables WS but must NOT touch StreamKWorkStealingRelaxed.
+        monkeypatch.setenv("TENSILE_STREAMK_WS_MODE", "only")
+        monkeypatch.delenv("TENSILE_GENERATE_STREAMK_WS_VARIANTS", raising=False)
+        data = _mk_matching_data()
+        self.apply(data)
+        for idx in _ELIGIBLE:
+            assert data["Solutions"][idx]["StreamKWorkStealing"] == 1
+            assert data["Solutions"][idx].get("StreamKWorkStealingRelaxed", 0) == 0
+
+    def test_relaxed_with_no_eligible_solutions_is_a_noop(self, monkeypatch):
+        monkeypatch.setenv("TENSILE_STREAMK_WS_MODE", "relaxed")
+        data = {
+            "LibraryType": "Matching",
+            "Solutions": [
+                {"name": "gemm", "StreamK": 0, "StreamKAtomic": 0, "StreamKWorkStealing": 0},
+                {"name": "sk4atomic", "StreamK": 4, "StreamKAtomic": 1, "StreamKWorkStealing": 0},
+            ],
+            "Library": {"table": [[[1, 1, 1, 1], [0, 1.0]]]},
+        }
+        before = deepcopy(data)
+        self.apply(data)
+        assert data == before
+
 
 class TestWorkStealingModeResolution:
-    """Env-var precedence + back-compat + unknown-value fallback (binary)."""
+    """Env-var precedence + back-compat + unknown-value fallback (off/only/relaxed)."""
 
     def setup_method(self):
         self.apply = _extract_ws_mode_applier()
@@ -701,3 +788,17 @@ class TestWorkStealingModeResolution:
         self.apply(data)
         assert len(data["Solutions"]) == n
         assert self._no_new_flips(data)
+
+    def test_relaxed_is_not_treated_as_unknown(self, monkeypatch):
+        # "relaxed" is a recognized value, so it must flip eligible solutions
+        # (like "only") rather than falling back to the off no-op, and it also
+        # sets the relaxed flag on those solutions.
+        monkeypatch.setenv("TENSILE_STREAMK_WS_MODE", "relaxed")
+        monkeypatch.delenv("TENSILE_GENERATE_STREAMK_WS_VARIANTS", raising=False)
+        data = _mk_matching_data()
+        n = len(data["Solutions"])
+        self.apply(data)
+        assert len(data["Solutions"]) == n
+        assert self._flipped_eligible(data)
+        for idx in _ELIGIBLE:
+            assert data["Solutions"][idx]["StreamKWorkStealingRelaxed"] == 1

@@ -123,6 +123,7 @@ def getRequiredParametersMin() -> set:
         'StreamK',
         'StreamKForceDPOnly',
         'StreamKWorkStealing',
+        'StreamKWorkStealingRelaxed',
         'StreamKXCCMapping',
         'StreamKFixupTreeReduction',
         'SuppressNoLoadLoop',

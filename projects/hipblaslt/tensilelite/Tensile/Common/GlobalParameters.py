@@ -569,6 +569,7 @@ defaultBenchmarkCommonParameters = [
     {"StreamKForceDPOnly": [0]},
     {"StreamKAtomic": [0]},
     {"StreamKWorkStealing": [0]},
+    {"StreamKWorkStealingRelaxed": [0]},
     {"StreamKXCCMapping": [0]},
     {"StreamKFixupTreeReduction": [0]},
     {"DebugStreamK": [0]},

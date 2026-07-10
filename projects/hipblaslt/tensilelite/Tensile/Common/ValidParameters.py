@@ -824,6 +824,15 @@ validParameters = { # we need to make sure this matches develop
     #  0: off (emitted assembly is byte-for-byte the baseline)
     #  1: on
     "StreamKWorkStealing": [0, 1],
+    # Codegen-time policy switch for the StreamKWorkStealing steal decision. Only
+    # meaningful when StreamKWorkStealing is enabled (cleared to 0 otherwise).
+    #  0: original policy -- steal only when the next neighbor owns a structural
+    #     extra tile (a queue without an extra is never robbed). Emitted assembly
+    #     is byte-for-byte the StreamKWorkStealing baseline.
+    #  1: relaxed policy -- drop the neighbor "has no extra" guard so an idle
+    #     workgroup attempts a steal regardless, trading a possibly-wasted atomic
+    #     for more overlap.
+    "StreamKWorkStealingRelaxed": [0, 1],
     # Enables XCC-based remapping of workgroups, set the value to the number of XCCs
     # for the device/configuration being used
     #  0: uses default workgroup assignment

@@ -385,6 +385,10 @@ class StreamK(Component):
         global index. A lost race leaves sWorkItemIdx >= TotalItems so the
         existing downstream valid-index check turns this WG into a no-op.
         sQueueIdx is clobbered. Caller must gate on kernel["StreamKWorkStealing"].
+
+        When kernel["StreamKWorkStealingRelaxed"] is set the neighbor "has no
+        structural extra" guard is omitted so the steal is attempted regardless;
+        the default (unset/0) reproduces the original policy byte-for-byte.
         """
         skFetchDone = mkLabel("SK_FetchDone")
         mod.add(SCmpLtU32(src0=sgpr(sWorkItemIdx), src1=sgpr("TotalItems"), comment="Home fetch valid?"))
@@ -400,8 +404,14 @@ class StreamK(Component):
         # Walk to the immediate next queue (wrap within the 8-queue ring).
         mod.add(SAddU32(dst=sgpr(sQueueIdx), src0=sgpr(sQueueIdx), src1=1, comment="Next queue"))
         mod.add(SAndB32(dst=sgpr(sQueueIdx), src0=sgpr(sQueueIdx), src1=self._WS_QUEUE_MASK, comment="Wrap queue index"))
-        mod.add(SCmpGeU32(src0=sgpr(sQueueIdx), src1=sgpr(sRemainder), comment="Neighbor has no structural extra?"))
-        mod.add(SCBranchSCC1(labelName=skFetchDone.getLabelName(), comment="Neighbor has no extra; skip steal"))
+        if not kernel.get("StreamKWorkStealingRelaxed"):
+            # Original policy: only steal when the neighbor owns a structural
+            # extra tile, so a queue with no extra is never robbed. The relaxed
+            # policy drops this guard so the idle WG still attempts the atomic --
+            # a lost/empty race just leaves sWorkItemIdx >= TotalItems (no-op),
+            # trading a possibly-wasted atomic for more steal opportunities.
+            mod.add(SCmpGeU32(src0=sgpr(sQueueIdx), src1=sgpr(sRemainder), comment="Neighbor has no structural extra?"))
+            mod.add(SCBranchSCC1(labelName=skFetchDone.getLabelName(), comment="Neighbor has no extra; skip steal"))
 
         # One atomic on the neighbor's counter, auto-reset disabled.
         sAddress = writer.sgprPool.checkOutAligned(2, 2, "wsStealAddress")

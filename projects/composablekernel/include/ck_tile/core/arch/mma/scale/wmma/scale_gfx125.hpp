@@ -57,9 +57,9 @@ namespace ck_tile::core::arch::mma {
                 scale::detail::is_legal_combination<A_TYPE, B_TYPE, P::scale_a, P::scale_b>,                                         \
                 "Unsupported ADataType/BDataType/scale_a/scale_b combination");                                                      \
             return {INSTRUCTION(PackedDataTypeToFlag_v<A_TYPE>,                                                                      \
-                                scale::detail::to_wmma_scale_arg<A_TYPE>(aVec),                                                      \
+                                to_type<int32x16_t>(aVec),                                                                           \
                                 PackedDataTypeToFlag_v<B_TYPE>,                                                                      \
-                                scale::detail::to_wmma_scale_arg<B_TYPE>(bVec),                                                      \
+                                to_type<int32x16_t>(bVec),                                                                           \
                                 0,                                                                                                   \
                                 cVec,                                                                                                \
                                 P::op_sel_a,                                                                                         \

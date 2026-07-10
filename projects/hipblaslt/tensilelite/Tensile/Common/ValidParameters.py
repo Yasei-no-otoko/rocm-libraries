@@ -1081,6 +1081,7 @@ validParameters = { # we need to make sure this matches develop
     "TDMSplit": [False, True],
     "TDMStoreEdge": [False, True],
     "TDMSubtileHybrid": [False, True],
+    "TDMStorePipeline": [False, True],
     # In-device layout of the MX scale tensors (MXSA/MXSB).
     # User-facing values:
     #   "NoSwizzle":       no swizzling; plain row/column layout (this is the default

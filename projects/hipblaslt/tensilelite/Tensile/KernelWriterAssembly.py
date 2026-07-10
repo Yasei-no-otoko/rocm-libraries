@@ -13941,7 +13941,81 @@ class KernelWriterAssembly(KernelWriter):
                        memToken=MemTokenData([self.states.memTokenLdsBuffer0])))
     return module
 
+  def _emitTdmSubtileHybridFlushPipelined(self, kernel):
+    # Deferred-wait pipelined variant of the whole-tile hybrid TDM store, gated
+    # by the TDMStorePipeline solution flag.  Split the tile's N (MT1) extent
+    # into nChunks column chunks and emit one tensor_store_from_lds per chunk,
+    # each reading its ABSOLUTE M-contiguous LDS offset (c*chunkCols*MT0*bpe ->
+    # lds_addr in G0+1) and writing the matching global-D column window; DEFER a
+    # single s_wait_tensorcnt(0) until after ALL chunk stores are issued.  The
+    # staging producer (_emitSubtileHybridScratchStore) is unchanged: the full
+    # tile is staged M-contiguous at LDS base 0, so chunks read disjoint,
+    # already-populated LDS regions (no buffer reuse -> no overwrite hazard).
+    # Correctness is identical to the single-store path, but multiple async TDM
+    # stores overlap in flight (bounded by the HW per-wave / per-SIMD caps),
+    # removing the per-store s_wait_tensorcnt(0) drain that serialized the store.
+    module = Module("TdmSubtileHybridFlushPipelined")
+    module.add(SWaitCnt(dscnt=0, comment="hybrid: wait scratch ds_store"))
+    module.add(SBarrier(comment="hybrid: all waves staged scratch before TDM store"))
+    bpe = self.states.bpeCexternalGSU1
+    log2bpe = int(log2(bpe)); dss = {1:0,2:1,4:2,8:3}[bpe]
+    MT0 = kernel["MacroTile0"]; MT1 = kernel["MacroTile1"]
+    packedD1 = kernel["PackedC1IndicesX"]
+    strideD1 = "StrideD%s" % (self.states.indexChars[packedD1[0]])
+    sizeI = self.sizeRef(kernel["ProblemType"]["Index0"])
+    sizeJ = self.sizeRef(kernel["ProblemType"]["Index1"])
+    # chunkCols: aim for ~4 async stores in flight (per-SIMD cap 6 / per-wave 3)
+    # when MT1 divides evenly; fall back to 2 or 1 for smaller/odd MT1.  Chunking
+    # only changes tile_dim1 and the per-chunk column origin; the contiguous
+    # MT0-row global run per column is unchanged, so no alignment impact.
+    if   MT1 % 4 == 0: nChunks = 4
+    elif MT1 % 2 == 0: nChunks = 2
+    else:              nChunks = 1
+    chunkCols = MT1 // nChunks
+    with self.allocTmpSgpr(16, alignment=4, tag="tdmHybDesc") as descS:
+      g0 = descS.idx; g1 = g0 + 4
+      for c in range(nChunks):
+        colBase = c * chunkCols
+        ldsByte = colBase * MT0 * bpe
+        for k in range(12): module.add(SMovB32(dst=sgpr(g0+k), src=0, comment="zero D# dword"))
+        module.add(SMovB32(dst=sgpr(g0+0), src=hex(0x1 | (1<<3)), comment="G0 Reserved0|m_is_store"))
+        module.add(SMovB32(dst=sgpr(g0+1), src=hex(ldsByte), comment="G0 lds_addr = chunk %d base (byte)" % c))
+        with self.allocTmpSgpr(2, alignment=2, tag="tdmHybAddr") as aS:
+          o = aS.idx
+          module.add(SMulI32(dst=sgpr(o), src0=sgpr("WorkGroup1"), src1=MT1, comment="col0=wg1*MT1"))
+          if colBase: module.add(SAddU32(dst=sgpr(o), src0=sgpr(o), src1=hex(colBase), comment="+chunk colBase"))
+          module.add(SMulI32(dst=sgpr(o), src0=sgpr(o), src1=sgpr(strideD1), comment="*StrideD"))
+          module.add(SMulI32(dst=sgpr(o+1), src0=sgpr("WorkGroup0"), src1=MT0, comment="row0=wg0*MT0"))
+          module.add(SAddU32(dst=sgpr(o), src0=sgpr(o), src1=sgpr(o+1), comment="tileOriginElem"))
+          if log2bpe: module.add(SLShiftLeftB32(dst=sgpr(o), shiftHex=hex(log2bpe), src=sgpr(o), comment="*bpe"))
+          module.add(SMovB64(dst=sgpr(g0+2,2), src=sgpr("AddressD",2), comment="G0 D base"))
+          module.add(SAddU32(dst=sgpr(g0+2), src0=sgpr(g0+2), src1=sgpr(o), comment="+tileOff lo"))
+          module.add(SAddCU32(dst=sgpr(g0+3), src0=sgpr(g0+3), src1=0, comment="+tileOff hi"))
+        module.add(SOrB32(dst=sgpr(g0+3), src0=sgpr(g0+3), src1=hex(2<<30), comment="G0 type=2"))
+        module.add(SMovB32(dst=sgpr(g1+0), src=hex(dss<<16), comment="G1 data_size"))
+        with self.allocTmpSgpr(3, tag="tdmHybDim") as tS:
+          t = tS.idx; rd0 = tS.idx+1; rd1 = tS.idx+2
+          module.add(SMulI32(dst=sgpr(rd0), src0=sgpr("WorkGroup0"), src1=MT0, comment="rowStart"))
+          module.add(SSubU32(dst=sgpr(rd0), src0=sizeI, src1=sgpr(rd0), comment="tdim0=M-rowStart"))
+          module.add(SMulI32(dst=sgpr(rd1), src0=sgpr("WorkGroup1"), src1=MT1, comment="colStart"))
+          if colBase: module.add(SAddU32(dst=sgpr(rd1), src0=sgpr(rd1), src1=hex(colBase), comment="+chunk colBase"))
+          module.add(SSubU32(dst=sgpr(rd1), src0=sizeJ, src1=sgpr(rd1), comment="tdim1=N-colStart"))
+          module.add(SLShiftLeftB32(dst=sgpr(t), shiftHex=hex(16), src=sgpr(rd0))); module.add(SOrB32(dst=sgpr(g1+1), src0=sgpr(g1+1), src1=sgpr(t), comment="tdim0 lo"))
+          module.add(SLShiftRightB32(dst=sgpr(t), shiftHex=hex(16), src=sgpr(rd0))); module.add(SOrB32(dst=sgpr(g1+2), src0=sgpr(g1+2), src1=sgpr(t), comment="tdim0 hi"))
+          module.add(SLShiftLeftB32(dst=sgpr(t), shiftHex=hex(16), src=sgpr(rd1))); module.add(SOrB32(dst=sgpr(g1+2), src0=sgpr(g1+2), src1=sgpr(t), comment="tdim1 lo"))
+          module.add(SLShiftRightB32(dst=sgpr(t), shiftHex=hex(16), src=sgpr(rd1))); module.add(SOrB32(dst=sgpr(g1+3), src0=sgpr(g1+3), src1=sgpr(t), comment="tdim1 hi"))
+        module.add(SOrB32(dst=sgpr(g1+3), src0=sgpr(g1+3), src1=hex((MT0 & 0xFFFF)<<16), comment="tile_dim0=MT0"))
+        module.add(SOrB32(dst=sgpr(g1+4), src0=sgpr(g1+4), src1=hex(chunkCols & 0xFFFF), comment="tile_dim1=chunkCols"))
+        module.add(SMovB32(dst=sgpr(g1+5), src=sgpr(strideD1), comment="sgpr5=StrideD"))
+        inst = TensorStoreFromLds(sgpr(g0,4), sgpr(g1,8), None, None, "TDM hybrid store D chunk %d/%d (deferred wait)" % (c, nChunks))
+        inst.setMemToken(MemTokenData([self.states.memTokenLdsBuffer0]))
+        module.add(inst)
+      module.add(SWaitTensorcnt(tensorcnt=0, comment="deferred: wait all pipelined TDM stores"))
+    return module
+
   def _emitTdmSubtileHybridFlush(self, kernel):
+    if kernel.get("TDMStorePipeline"):
+      return self._emitTdmSubtileHybridFlushPipelined(kernel)
     module = Module("TdmSubtileHybridFlush")
     module.add(SWaitCnt(dscnt=0, comment="hybrid: wait scratch ds_store"))
     module.add(SBarrier(comment="hybrid: all waves staged scratch before TDM store"))

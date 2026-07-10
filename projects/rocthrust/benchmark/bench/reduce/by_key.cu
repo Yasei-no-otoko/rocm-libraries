@@ -128,8 +128,8 @@ int main(int argc, char* argv[])
 {
   primbench::settings settings;
   settings.size                 = 1; // bench_utils::sizes() calculates it later.
-  settings.min_gpu_ms_per_batch = 150;
-  settings.batch_window_size    = 2;
+  settings.min_gpu_ms_per_batch = 450;
+  settings.batch_window_size    = 3;
   primbench::executor executor(argc, argv, settings, primbench::flags::sync);
 
   constexpr size_t max_segment_sizes[] = {1, 4, 8};

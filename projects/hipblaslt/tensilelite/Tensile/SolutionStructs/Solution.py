@@ -179,6 +179,36 @@ def _disableUnsupportedRuntimeStaggerU(state):
     _disableRuntimeStaggerU(state)
 
 
+def _validateTDMStore(state, asmCaps, printRejectionReason):
+  """Validate the TDMStore whole-MacroTile TDM epilogue store transport.
+
+  Lifted out of ``Solution.assignDerivedParameters`` (mirrors
+  :func:`_deriveAndValidateMXScaleLayoutAndTransport`) so the HasTDM guard can
+  be unit-tested in isolation without standing up a full solution-derivation
+  pipeline.
+
+  ``TDMStore`` treats a full or partial output MacroTile as one full tile: the
+  whole padded tile runs through the epilogue, is staged M-contiguous into an
+  LDS scratch tile, and is flushed with a single ``tensor_store_from_lds``.
+  That store needs the Tensor Data Mover engine, so a candidate that enables
+  ``TDMStore`` on an arch without ``asmCaps["HasTDM"]`` is rejected.
+
+  Args:
+      state: Solution state dict; ``state["Valid"]`` is set to ``False`` on
+          reject. Must contain ``"TDMStore"``.
+      asmCaps: Mapping with at least ``"HasTDM"`` (bool).
+      printRejectionReason: Forwarded to :func:`reject`.
+
+  Returns:
+      ``True`` if valid (no reject fired); ``False`` if a reject was emitted.
+  """
+  if state["TDMStore"]:
+    if not asmCaps["HasTDM"]:
+      reject(state, printRejectionReason, "TDMStore requires TDM (this arch does not support TDM)")
+      return False
+  return True
+
+
 def _validateStreamKForceDPOnly(state, printRejectionReason):
   if state["StreamKForceDPOnly"]:
     if state["StreamK"] != 3:
@@ -2413,12 +2443,11 @@ class Solution(collections.abc.Mapping):
         return
 
     # TDMStore (whole-MacroTile tensor_store_from_lds epilogue store) requires the
-    # Tensor Data Mover engine; reject on arches without HasTDM. Mirrors the
-    # TDMInst guard above.
-    if state["TDMStore"]:
-      if not isaInfoMap[isa].asmCaps["HasTDM"]:
-        reject(state, printRejectionReason, "TDMStore requires TDM (this arch does not support TDM)")
-        return
+    # Tensor Data Mover engine. Delegated to a lifted-out helper so the HasTDM
+    # guard is unit-testable in isolation (mirrors
+    # _deriveAndValidateMXScaleLayoutAndTransport).
+    if not _validateTDMStore(state, isaInfoMap[isa].asmCaps, printRejectionReason):
+      return
 
     if state["CompactLoopStore"]:
       if not isaInfoMap[isa].asmCaps["HasMovRelsD2B32"]:

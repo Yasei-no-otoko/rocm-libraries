@@ -226,6 +226,9 @@ if(HIPBLASLT_BUNDLE_PYTHON_DEPS OR ROCISA_STANDALONE)
     # layout).
     if(WIN32)
         add_custom_command(TARGET _rocisa POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E echo "DIAG_RUNTIME_DLLS=[$<TARGET_RUNTIME_DLLS:_rocisa>]"
+            COMMAND dumpbin /dependents "$<TARGET_FILE:_rocisa>"
+            COMMAND cmd /c dir "$<TARGET_FILE_DIR:_rocisa>"
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 $<TARGET_RUNTIME_DLLS:_rocisa>
                 $<TARGET_FILE_DIR:_rocisa>

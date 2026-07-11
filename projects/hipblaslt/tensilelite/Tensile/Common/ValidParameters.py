@@ -1091,6 +1091,14 @@ validParameters = { # we need to make sure this matches develop
     # scalar-collapse of the buffer_store path on aligned/even edges and is a large
     # epilogue speedup there; tiles it cannot route fall back to the subtile store.
     "TDMStore": [False, True],
+    # TDMStoreInstAllowSS (dev/experimental, requires TDMStore): allow SourceSwap=1
+    # to survive the UseSubtileImpl SS=0 force so the SS1 (N-contiguous accvgpr)
+    # TDMStore path can be exercised. Default False = current behavior (SS forced
+    # to 0 under UseSubtileImpl). VectorWidthA/B and BufferStore stay forced. Under
+    # SS1 the LDS scratch is staged N-major and flushed with a two-stride TDM
+    # descriptor (Option A). Gated on this flag so the SS0 path is byte-for-byte
+    # unchanged when off.
+    "TDMStoreInstAllowSS": [False, True],
     # In-device layout of the MX scale tensors (MXSA/MXSB).
     # User-facing values:
     #   "NoSwizzle":       no swizzling; plain row/column layout (this is the default

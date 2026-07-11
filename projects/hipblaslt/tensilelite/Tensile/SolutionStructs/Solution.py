@@ -918,7 +918,12 @@ class Solution(collections.abc.Mapping):
     if state["UseSubtileImpl"]:
       state["VectorWidthA"] = 1
       state["VectorWidthB"] = 1
-      state["SourceSwap"] = False
+      # Dev flag TDMStoreInstAllowSS (with TDMStore): allow SourceSwap=1 to survive
+      # so the SS1 (N-contiguous accvgpr) TDMStore path can be exercised. The SS=0
+      # force below is otherwise a subtile-store implementation constraint, not a
+      # requirement of SS itself. VWA/VWB and BufferStore stay forced regardless.
+      if not (state.get("TDMStoreInstAllowSS") and state.get("TDMStore")):
+        state["SourceSwap"] = False
       # Force BufferStore=1: UseSubtileImpl optimized storeD path is only implemented
       # for buffer stores for now.
       state["BufferStore"] = 1

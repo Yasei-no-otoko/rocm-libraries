@@ -1,0 +1,73 @@
+TestParameters:
+  marks: [skip-gfx900, skip-gfx906, skip-gfx908, skip-gfx90a, skip-gfx940, skip-gfx941, skip-gfx942, skip-gfx950, skip-gfx1010, skip-gfx1011, skip-gfx1012, skip-gfx1030, skip-gfx1100, skip-gfx1101, skip-gfx1102, skip-gfx1200, skip-gfx1201]
+
+# TDMStoreInst full-tile TDM epilogue store (gfx1250) functional test.
+# Exercises TDMStoreInst=[False, True] (buffer_store baseline vs full-tile
+# tensor_store_from_lds) over full and partial-M / partial-N edge tiles with
+# beta != 0 (DataInitTypeBeta: 2) so the full-tile epilogue -- including the
+# read-C path over dummy rows/cols -- is fully validated element-wise
+# (NumElementsToValidate: -1). Requires HasTDM (gfx1250).
+GlobalParameters:
+  NumElementsToValidate: -1
+  BoundsCheck: 0
+  KernelTime: False
+  CpuThreads: 32
+  DataInitTypeAlpha: 1
+  DataInitTypeBeta: 2
+  DataInitTypeA: 3
+  DataInitTypeB: 3
+  DataInitTypeC: 3
+  PrintLevel: 2
+
+BenchmarkProblems:
+  #######################################
+  # bf16 TN HPA - TDMStoreInst full-tile store, edge coverage
+  #######################################
+  -
+    - # ProblemType
+      OperationType: GEMM
+      DataType: b
+      DestDataType: b
+      ComputeDataType: s
+      HighPrecisionAccumulate: True
+      TransposeA: True
+      TransposeB: False
+      UseBeta: True
+      Batched: True
+      SupportUserArgs: True
+
+    - # TDMStoreInst off (buffer_store baseline) vs on (full-tile tensor_store_from_lds)
+      InitialSolutionParameters:
+      BenchmarkCommonParameters:
+        - KernelLanguage: ["Assembly"]
+      ForkParameters:
+        - MatrixInstruction:
+          - [16, 16, 32, 1,  1, 8, 8,  2, 2]
+        - DepthU: [64]
+        - WavefrontSize: [32]
+        - PrefetchGlobalRead: [2]
+        - ScheduleIterAlg: [3]
+        - UseSubtileImpl: [True]
+        - TDMStoreInst: [False, True]
+        - TDMInst: [3]
+        - StreamK: [0]
+        - StaggerU: [0]
+        - GlobalSplitU: [1]
+        - StoreRemapVectorWidth: [0]
+      BenchmarkForkParameters:
+      JoinParameters:
+      BenchmarkJoinParameters:
+      BenchmarkFinalParameters:
+        - ProblemSizes:
+          - Exact: [255, 255, 1, 256]
+          - Exact: [255, 256, 1, 256]
+          - Exact: [255, 512, 1, 256]
+          - Exact: [256, 255, 1, 256]
+          - Exact: [256, 256, 1, 256]
+          - Exact: [256, 512, 1, 256]
+          - Exact: [504, 255, 1, 256]
+          - Exact: [504, 256, 1, 256]
+          - Exact: [504, 512, 1, 256]
+          - Exact: [512, 255, 1, 256]
+          - Exact: [512, 256, 1, 256]
+          - Exact: [512, 512, 1, 256]

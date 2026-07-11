@@ -311,7 +311,12 @@ class ComputeStoreVgprsMFMASwap(ComputeStoreVgprs):
             module.add(vectorStaticDivide(tmpVgpr0, wave_id, kernel["MIWaveGroup"][0], tmpVgpr1Res))
             if kernel["LocalSplitU"] > 1:
                 module.add(vectorStaticRemainder(dummy, tmpVgpr0, tmpVgpr0, kernel["MIWaveGroup"][1], tmpVgpr1Res, tmpSgprInfo))
-            module.add(VMulLOU32(dst=vgpr(tmpVgpr0), src0=hex(MIBShape1), src1=vgpr(tmpVgpr0), comment="wave coordination offset 1"))
+            # Subtile kernels: each wave owns a contiguous block of MIWaveTile[1]*MIBShape1 cols
+            # (mirrors the non-swap ComputeStoreVgprsMFMA fix). Without this the swap-path wave
+            # offset uses the interleaved MIBShape1 stride and waves collide -> only wave (0,0)'s
+            # 128x128 quadrant is correct (the SS1+UseSubtileImpl 2x2-quadrant bug).
+            waveBlockCols = MIBShape1 * kernel["MIWaveTile"][1] if kernel.get("UseSubtileImpl") else MIBShape1
+            module.add(VMulLOU32(dst=vgpr(tmpVgpr0), src0=hex(waveBlockCols), src1=vgpr(tmpVgpr0), comment="wave coordination offset 1"))
 
             # coord 1 : thread part
             module.add(vectorStaticRemainder(dummy, tid1, "Serial", writer.states.kernel["WavefrontSize"], tmpVgpr1Res, tmpSgprInfo))
@@ -335,7 +340,10 @@ class ComputeStoreVgprsMFMASwap(ComputeStoreVgprs):
 
             # coord 0 : wave part
             module.add(vectorStaticRemainder(dummy, tid0, wave_id, kernel["MIWaveGroup"][0], tmpVgpr1Res, tmpSgprInfo))
-            module.add(VMulLOU32(dst=vgpr(tid0), src0=hex(MIBShape0), src1=vgpr(tid0), comment="wave coordination offset 0"))
+            # Subtile kernels: each wave owns a contiguous block of MIWaveTile[0]*MIBShape0 rows
+            # (mirrors the non-swap ComputeStoreVgprsMFMA fix; see coord1 wave part above).
+            waveBlockRows = MIBShape0 * kernel["MIWaveTile"][0] if kernel.get("UseSubtileImpl") else MIBShape0
+            module.add(VMulLOU32(dst=vgpr(tid0), src0=hex(waveBlockRows), src1=vgpr(tid0), comment="wave coordination offset 0"))
 
             # coord 0 : thread part
             module.add(vectorStaticRemainder(dummy, tmpVgpr0, "Serial", matrixInstM, tmpVgpr1Res, tmpSgprInfo))

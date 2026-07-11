@@ -183,15 +183,35 @@ def _validateTDMStoreInst(state, asmCaps, printRejectionReason):
   """Validate the TDMStoreInst full-tile TDM epilogue store transport.
 
   Lifted out of ``Solution.assignDerivedParameters`` (mirrors
-  :func:`_deriveAndValidateMXScaleLayoutAndTransport`) so the HasTDM guard can
-  be unit-tested in isolation without standing up a full solution-derivation
+  :func:`_deriveAndValidateMXScaleLayoutAndTransport`) so the guards can be
+  unit-tested in isolation without standing up a full solution-derivation
   pipeline.
 
   ``TDMStoreInst`` treats a full or partial output MacroTile as one full tile: the
   entire padded tile runs through the epilogue, is staged M-contiguous into an
-  LDS scratch tile, and is flushed with a single ``tensor_store_from_lds``.
-  That store needs the Tensor Data Mover engine, so a candidate that enables
-  ``TDMStoreInst`` on an arch without ``asmCaps["HasTDM"]`` is rejected.
+  LDS scratch tile, and is flushed with a single ``tensor_store_from_lds``
+  whose descriptor clamps the OOB/dummy region at write-out.
+
+  Guards (all only fire when ``state["TDMStoreInst"]`` is truthy):
+    * HasTDM - the flush needs the Tensor Data Mover engine.
+    * UseSubtileImpl prerequisite - TDMStoreInst only activates on the
+      full-tile subtile store path (dispatch is ``UseSubtileImpl and
+      not edge`` in GlobalWriteBatch).
+    * 16x16 MatrixInstruction - the acc->coord mapping and the M-contiguous
+      staging assume the gfx1250 16x16 MI shape.
+    * 1/2/4-byte DestDataType - the flush descriptor ``data_size`` field only
+      encodes {1,2,4}-byte elements; a fractional-byte output (F6/F4) would
+      break the encoding (the ``dss`` lookup would KeyError in codegen).
+    * No GlobalSplitU>1 - the flush writes ``AddressD`` directly with the GSU1
+      external bpe; there is no workspace/partials accumulation path.
+    * No StreamK - the full-tile flush has no partial-tile fixup.
+    * No atomic (StreamKAtomic) - the flush emits a plain, non-atomic store.
+    * No ClusterDim/Multicast - the store side sets no multicast mask.
+    * LDS capacity - the entire ``MT0*MT1*bpe`` output tile is staged in one
+      shared LDS scratch region; reject if it exceeds ``state["MaxLDS"]``.
+
+  Every non-HasTDM read uses ``state.get`` with a valid-config default so the
+  helper stays callable from unit tests with a minimal ``state`` dict.
 
   Args:
       state: Solution state dict; ``state["Valid"]`` is set to ``False`` on
@@ -202,10 +222,87 @@ def _validateTDMStoreInst(state, asmCaps, printRejectionReason):
   Returns:
       ``True`` if valid (no reject fired); ``False`` if a reject was emitted.
   """
-  if state["TDMStoreInst"]:
-    if not asmCaps["HasTDM"]:
-      reject(state, printRejectionReason, "TDMStoreInst requires TDM (this arch does not support TDM)")
+  if not state["TDMStoreInst"]:
+    return True
+
+  # Transport: the full-tile flush is a tensor_store_from_lds.
+  if not asmCaps["HasTDM"]:
+    reject(state, printRejectionReason, "TDMStoreInst requires TDM (this arch does not support TDM)")
+    return False
+
+  # Prerequisite: TDMStoreInst only activates on the UseSubtileImpl full-tile
+  # store path (GlobalWriteBatch dispatch: UseSubtileImpl and not edge).
+  if not state.get("UseSubtileImpl", True):
+    reject(state, printRejectionReason,
+           "TDMStoreInst requires UseSubtileImpl (full-tile subtile store path)")
+    return False
+
+  # Geometry: staging/descriptor + acc->coord mapping assume a 16x16 MI.
+  miM = state.get("MatrixInstM", 16)
+  miN = state.get("MatrixInstN", 16)
+  if (miM, miN) != (16, 16):
+    reject(state, printRejectionReason,
+           "TDMStoreInst requires 16x16 MatrixInstruction (got %sx%s)" % (miM, miN))
+    return False
+
+  # Output element size: the flush descriptor data_size encodes 1/2/4-byte
+  # elements only; fractional-byte outputs (F6/F4) would break the encoding.
+  destBytes = None
+  problemType = state.get("ProblemType")
+  if problemType is not None:
+    destType = None
+    try:
+      destType = problemType["DestDataType"]
+    except (KeyError, TypeError):
+      destType = None
+    if destType is not None:
+      try:
+        destBytes = destType.numBytes()
+      except Exception:
+        destBytes = None
+  if destBytes is not None and destBytes not in (1, 2, 4):
+    reject(state, printRejectionReason,
+           "TDMStoreInst requires a 1/2/4-byte DestDataType (got %s bytes)" % destBytes)
+    return False
+
+  # GlobalSplitU>1 accumulation is unsupported: the flush writes AddressD
+  # directly with the GSU1 external bpe and has no workspace/partials path.
+  if state.get("GlobalSplitU", 1) > 1:
+    reject(state, printRejectionReason,
+           "TDMStoreInst does not support GlobalSplitU>1 (no workspace/partials accumulation path)")
+    return False
+
+  # StreamK partial-tile fixup is not handled by the full-tile flush.
+  if state.get("StreamK", 0) != 0:
+    reject(state, printRejectionReason,
+           "TDMStoreInst does not support StreamK (partial-tile fixup not implemented)")
+    return False
+
+  # Atomic accumulation is unsupported: the flush emits a plain (non-atomic)
+  # tensor_store_from_lds.
+  if state.get("StreamKAtomic", 0):
+    reject(state, printRejectionReason,
+           "TDMStoreInst does not support atomic store (StreamKAtomic)")
+    return False
+
+  # Cluster/Multicast: the store side sets no multicast mask on the descriptor.
+  if state.get("ClusterDim", [1, 1]) != [1, 1]:
+    reject(state, printRejectionReason,
+           "TDMStoreInst does not support ClusterDim/Multicast (no store-side multicast mask)")
+    return False
+
+  # LDS capacity: the entire MT0*MT1*bpe output tile is staged in one shared LDS
+  # scratch region (all waves cooperative). Reject if it exceeds MaxLDS.
+  mt0 = state.get("MacroTile0")
+  mt1 = state.get("MacroTile1")
+  maxLds = state.get("MaxLDS")
+  if mt0 and mt1 and destBytes and maxLds and maxLds > 0:
+    stagingBytes = mt0 * mt1 * destBytes
+    if stagingBytes > maxLds:
+      reject(state, printRejectionReason,
+             "TDMStoreInst staging tile MT0*MT1*bpe=%u B exceeds MaxLDS=%u B" % (stagingBytes, maxLds))
       return False
+
   return True
 
 
@@ -918,7 +1015,23 @@ class Solution(collections.abc.Mapping):
     if state["UseSubtileImpl"]:
       state["VectorWidthA"] = 1
       state["VectorWidthB"] = 1
-      state["SourceSwap"] = False
+      # Dev flag TDMStoreInstAllowSS (with TDMStoreInst): allow SourceSwap=1 to survive
+      # so the SS1 (N-contiguous accvgpr) TDMStoreInst path can be exercised. The SS=0
+      # force below is otherwise a subtile-store implementation constraint, not a
+      # requirement of SS itself. VWA/VWB and BufferStore stay forced regardless.
+      if not (state.get("TDMStoreInstAllowSS") and state.get("TDMStoreInst")):
+        state["SourceSwap"] = False
+      elif state.get("SourceSwap"):
+        # SS1 survives for TDMStoreInst: correct-but-not-peak. Warn (do NOT reject).
+        printWarning(
+          "TDMStoreInst + SourceSwap=1: the gfx1250 TDM store cannot transpose its burst "
+          "(the contiguous dim is always unit-stride in global), so SS1's N-contiguous "
+          "accumulators are staged into an M-major LDS via strided sub-dword ds_store -> "
+          "the TDM store's throughput cannot be fully realized. SS1's store benefit is "
+          "delivered by buffer_store, not by the TDM store; this combination is CORRECT but "
+          "not optimal. Prefer SourceSwap=0 for best TDMStoreInst performance. Improving it "
+          "requires HW/descriptor-level transpose support (cf. TDM spec 8.2 transpose_matrix, "
+          "not currently POR).")
       # Force BufferStore=1: UseSubtileImpl optimized storeD path is only implemented
       # for buffer stores for now.
       state["BufferStore"] = 1

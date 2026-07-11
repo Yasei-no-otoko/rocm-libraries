@@ -91,3 +91,113 @@ class TestTDMStoreInstHasTDMGuard:
         state = {"TDMStoreInst": False}
         assert _validateTDMStoreInst(state, _caps(hasTDM=False), False) is True
         assert state.get("Valid") is not False
+
+
+# ---------------------------------------------------------------------------
+# Correctness-hardening guards (P0/P1)
+#
+# The full-tile flush stages the entire MT0*MT1 tile M-contiguous into an
+# LDS scratch and writes AddressD with one non-atomic tensor_store_from_lds.
+# These guards reject the combinations that would break that assumption. All
+# reads use state.get with valid-config defaults, so a "valid" base state must
+# populate every field a guard inspects; each test flips exactly one field.
+# ---------------------------------------------------------------------------
+
+class _FakeDataType:
+    """Minimal DestDataType stub exposing numBytes()."""
+    def __init__(self, numBytes):
+        self._numBytes = numBytes
+
+    def numBytes(self):
+        return self._numBytes
+
+
+def _valid_state(**overrides):
+    """A fully-valid TDMStoreInst state (bf16 out, 16x16 MI, GSU1, no StreamK,
+    256x256 MacroTile that fits in a 160 KiB LDS). Override single fields to
+    exercise one guard at a time."""
+    state = {
+        "TDMStoreInst": True,
+        "UseSubtileImpl": True,
+        "MatrixInstM": 16,
+        "MatrixInstN": 16,
+        "ProblemType": {"DestDataType": _FakeDataType(2)},  # bf16 -> 2 bytes
+        "GlobalSplitU": 1,
+        "StreamK": 0,
+        "StreamKAtomic": 0,
+        "ClusterDim": [1, 1],
+        "MacroTile0": 256,
+        "MacroTile1": 256,
+        "MaxLDS": 163840,  # gfx1250 device LDS (160 KiB): 256*256*2 = 128 KiB fits
+    }
+    state.update(overrides)
+    return state
+
+
+class TestTDMStoreInstHardeningGuards:
+
+    def test_valid_full_state_passes(self):
+        state = _valid_state()
+        assert _validateTDMStoreInst(state, _caps(hasTDM=True), False) is True
+        assert state.get("Valid") is not False
+
+    def test_reject_without_usesubtileimpl(self):
+        state = _valid_state(UseSubtileImpl=False)
+        assert _validateTDMStoreInst(state, _caps(hasTDM=True), False) is False
+        assert state["Valid"] is False
+
+    def test_reject_non_16x16_mi(self):
+        state = _valid_state(MatrixInstN=32)
+        assert _validateTDMStoreInst(state, _caps(hasTDM=True), False) is False
+        assert state["Valid"] is False
+
+    def test_reject_fractional_byte_dest(self):
+        # F4 output (0.5 B) -> data_size encoding would KeyError in codegen.
+        state = _valid_state(ProblemType={"DestDataType": _FakeDataType(0.5)})
+        assert _validateTDMStoreInst(state, _caps(hasTDM=True), False) is False
+        assert state["Valid"] is False
+
+    def test_reject_8byte_dest(self):
+        state = _valid_state(ProblemType={"DestDataType": _FakeDataType(8)})
+        assert _validateTDMStoreInst(state, _caps(hasTDM=True), False) is False
+        assert state["Valid"] is False
+
+    @pytest.mark.parametrize("bpe", [1, 2, 4])
+    def test_pass_supported_dest_bytes(self, bpe):
+        # 1/2/4-byte outputs are allowed; keep the tile small so LDS always fits.
+        state = _valid_state(ProblemType={"DestDataType": _FakeDataType(bpe)},
+                             MacroTile0=128, MacroTile1=128)
+        assert _validateTDMStoreInst(state, _caps(hasTDM=True), False) is True
+        assert state.get("Valid") is not False
+
+    def test_reject_globalsplitu_gt1(self):
+        state = _valid_state(GlobalSplitU=2)
+        assert _validateTDMStoreInst(state, _caps(hasTDM=True), False) is False
+        assert state["Valid"] is False
+
+    def test_reject_streamk(self):
+        state = _valid_state(StreamK=3)
+        assert _validateTDMStoreInst(state, _caps(hasTDM=True), False) is False
+        assert state["Valid"] is False
+
+    def test_reject_atomic(self):
+        state = _valid_state(StreamKAtomic=1)
+        assert _validateTDMStoreInst(state, _caps(hasTDM=True), False) is False
+        assert state["Valid"] is False
+
+    def test_reject_clusterdim_multicast(self):
+        state = _valid_state(ClusterDim=[2, 1])
+        assert _validateTDMStoreInst(state, _caps(hasTDM=True), False) is False
+        assert state["Valid"] is False
+
+    def test_reject_lds_capacity_overflow(self):
+        # 256*256*2 = 128 KiB > 64 KiB MaxLDS -> reject.
+        state = _valid_state(MaxLDS=65536)
+        assert _validateTDMStoreInst(state, _caps(hasTDM=True), False) is False
+        assert state["Valid"] is False
+
+    def test_pass_lds_capacity_fits(self):
+        # Same tile, 160 KiB LDS -> fits.
+        state = _valid_state(MaxLDS=163840)
+        assert _validateTDMStoreInst(state, _caps(hasTDM=True), False) is True
+        assert state.get("Valid") is not False

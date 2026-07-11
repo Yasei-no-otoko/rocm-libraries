@@ -13916,6 +13916,13 @@ class KernelWriterAssembly(KernelWriter):
     module.add(VSubU32(dst=vgpr(v), src0=vgpr(self.vgprs.coord0), src1=sgpr(tmpS01), comment="mLocal=coord0-wg0*MT0"))
     module.add(SMulI32(dst=sgpr(tmpS01), src0=sgpr("WorkGroup1"), src1=MT1, comment="wg1*MT1"))
     module.add(VSubU32(dst=vgpr(v+1), src0=vgpr(self.vgprs.coord1), src1=sgpr(tmpS01), comment="nLocal=coord1-wg1*MT1"))
+    # M-major LDS scratch base = (mLocal + nLocal*MT0)*bpe (M contiguous) for BOTH SS0 and
+    # SS1.  The TDM store's contiguous tile_dim0 dim is hardwired to unit stride in global,
+    # so it must map to the unit-stride (M) dim of col-major D; hence the LDS must be
+    # M-major.  For SS1 the N-contiguous accvgpr are scattered into this M-major layout by
+    # the strided b16 stores in _emitSubtileHybridScratchStore (Option B).  Option A's
+    # N-major LDS is fundamentally unusable because the TDM store cannot transpose the
+    # burst (see _emitTdmSubtileHybridFlush).
     module.add(VMulLOU32(dst=vgpr(v+1), src0=vgpr(v+1), src1=MT0, comment="nLocal*MT0"))
     module.add(VAddU32(dst=vgpr(v), src0=vgpr(v), src1=vgpr(v+1), comment="mLocal + nLocal*MT0"))
     module.add(VLShiftLeftB32(dst=vgpr(v), shiftHex=hex(int(log2(bpe))), src=vgpr(v), comment="*bpe"))
@@ -13930,15 +13937,48 @@ class KernelWriterAssembly(KernelWriter):
     # dwords into the M-contiguous LDS scratch at baseVgpr + (co0+co1*MT0)*bpe.
     module = Module("SubtileHybridScratchStore")
     bpe = self.states.bpeCexternalGSU1
-    MT0 = kernel["MacroTile0"]
+    MT0 = kernel["MacroTile0"]; MT1 = kernel["MacroTile1"]
     co0 = addrCalc.coordOffset0; co1 = addrCalc.coordOffset1
-    immOff = (co0 + co1*MT0)*bpe
+    ss1 = bool(kernel.get("TDMStoreInstAllowSS") and kernel.get("TDMStoreInst") and kernel.get("SourceSwap"))
     baseIdx = sumIdx0 - prefixOffset
-    ndw = (gwvw*bpe + 3)//4  # packed output dwords (bf16: gwvw/2)
-    module.add(dsStore(ndw*4, dstAddr=vgpr(baseVgpr), src=vgpr("ValuC+%d"%baseIdx, ndw),
-                       ds=DSModifiers(offset=immOff),
-                       comment="stage %d packed bf16 (already converted) to M-contiguous scratch"%gwvw,
-                       memToken=MemTokenData([self.states.memTokenLdsBuffer0])))
+    if ss1:
+      # SS1 (Option B): stage the N-contiguous accvgpr into the M-major LDS scratch (the
+      # layout the SS0 path + descriptor need) as single b16 stores.  Element k is
+      # (M=co0, N=co1+k) -> M-major byte offset (co0 + (co1+k)*MT0)*bpe (adjacent vector
+      # elems MT0*bpe apart, strided).  A packed b32 would clobber the M+1 neighbour
+      # (consecutive scratch-store calls step N, not M), so each element is a single b16.
+      # gwvw==1 here (VW0=VW1=1).  Correctness ALSO requires the SS1 subtile per-wave
+      # coordinate fix in ComputeStoreVgprsMFMASwap (waveBlockRows/Cols); with both,
+      # SS1+TDMStoreInst is bit-correct on gfx1250 (-1, M{255,256,504,512}xN{255,256,512}, x3).
+      # NOTE (perf): this strided sub-dword staging cannot capture SS1's store speedup (that
+      # belongs to buffer_store's coalesced N-contiguous writes) -> SS1+TDMStoreInst is a
+      # flexibility path, measured ~1.31x SLOWER than SS0-TDMStoreInst (4096x4096, best-of-10:
+      # 79.3us vs 60.4us).  A solve-time WARNING is emitted for this combo (Solution.py).
+      # Gated behind TDMStoreInstAllowSS (default False); SS0 path is byte-for-byte unaffected.
+      tmpHi = self.vgprPool.checkOut(1, "tdmHybB16Hi") if gwvw > 1 else None
+      for k in range(gwvw):
+        immOff = (co0 + (co1 + k)*MT0)*bpe
+        dwordIdx = baseIdx + k//2
+        if k % 2 == 0:
+          srcReg = vgpr("ValuC+%d"%dwordIdx)
+        else:
+          module.add(VLShiftRightB32(dst=vgpr(tmpHi), shiftHex=hex(16), src=vgpr("ValuC+%d"%dwordIdx), comment="hi bf16 -> low for b16 store"))
+          srcReg = vgpr(tmpHi)
+        inst = DSStoreB16(dstAddr=vgpr(baseVgpr), src=srcReg,
+                          ds=DSModifiers(offset=immOff),
+                          comment="Option B: stage bf16 elem %d (M-major, N-strided) to scratch"%k)
+        inst.setMemToken(MemTokenData([self.states.memTokenLdsBuffer0]))
+        module.add(inst)
+      if tmpHi is not None: self.vgprPool.checkIn(tmpHi)
+    else:
+      # SS0: M-major LDS -> offset (co0 + co1*MT0); the gwvw elements are M-contiguous in
+      # accvgpr and land contiguously in the M-major scratch (single packed store).
+      immOff = (co0 + co1*MT0)*bpe
+      ndw = (gwvw*bpe + 3)//4  # packed output dwords (bf16: gwvw/2)
+      module.add(dsStore(ndw*4, dstAddr=vgpr(baseVgpr), src=vgpr("ValuC+%d"%baseIdx, ndw),
+                         ds=DSModifiers(offset=immOff),
+                         comment="stage %d packed bf16 (already converted) to M-contiguous scratch"%gwvw,
+                         memToken=MemTokenData([self.states.memTokenLdsBuffer0])))
     return module
 
   def _emitTdmSubtileHybridFlush(self, kernel):
@@ -13968,19 +14008,31 @@ class KernelWriterAssembly(KernelWriter):
         module.add(SAddCU32(dst=sgpr(g0+3), src0=sgpr(g0+3), src1=0, comment="+tileOff hi"))
       module.add(SOrB32(dst=sgpr(g0+3), src0=sgpr(g0+3), src1=hex(2<<30), comment="G0 type=2"))
       module.add(SMovB32(dst=sgpr(g1+0), src=hex(dss<<16), comment="G1 data_size"))
+      # Descriptor is SS0-style (M-major) for BOTH SS0 and SS1 (Option B): tile_dim0=M is
+      # the fast/contiguous dim -> unit stride in col-major D; tile_dim1=N is the slow dim
+      # -> StrideD.  (SS1 stages its N-contiguous accvgpr into this M-major LDS via strided
+      # b16 stores; see _emitSubtileHybridScratchStore.)  The TDM store's contiguous burst
+      # dim is hardwired to unit stride in global, so N-major-LDS -> col-major-D (a
+      # transpose) is NOT expressible -- this is the fundamental reason Option A is blocked.
       with self.allocTmpSgpr(3, tag="tdmHybDim") as tS:
         t = tS.idx; rd0 = tS.idx+1; rd1 = tS.idx+2
         module.add(SMulI32(dst=sgpr(rd0), src0=sgpr("WorkGroup0"), src1=MT0, comment="rowStart"))
-        module.add(SSubU32(dst=sgpr(rd0), src0=sizeI, src1=sgpr(rd0), comment="tdim0=M-rowStart"))
+        module.add(SSubU32(dst=sgpr(rd0), src0=sizeI, src1=sgpr(rd0), comment="M-rowStart"))
         module.add(SMulI32(dst=sgpr(rd1), src0=sgpr("WorkGroup1"), src1=MT1, comment="colStart"))
-        module.add(SSubU32(dst=sgpr(rd1), src0=sizeJ, src1=sgpr(rd1), comment="tdim1=N-colStart"))
-        module.add(SLShiftLeftB32(dst=sgpr(t), shiftHex=hex(16), src=sgpr(rd0))); module.add(SOrB32(dst=sgpr(g1+1), src0=sgpr(g1+1), src1=sgpr(t), comment="tdim0 lo"))
-        module.add(SLShiftRightB32(dst=sgpr(t), shiftHex=hex(16), src=sgpr(rd0))); module.add(SOrB32(dst=sgpr(g1+2), src0=sgpr(g1+2), src1=sgpr(t), comment="tdim0 hi"))
-        module.add(SLShiftLeftB32(dst=sgpr(t), shiftHex=hex(16), src=sgpr(rd1))); module.add(SOrB32(dst=sgpr(g1+2), src0=sgpr(g1+2), src1=sgpr(t), comment="tdim1 lo"))
-        module.add(SLShiftRightB32(dst=sgpr(t), shiftHex=hex(16), src=sgpr(rd1))); module.add(SOrB32(dst=sgpr(g1+3), src0=sgpr(g1+3), src1=sgpr(t), comment="tdim1 hi"))
-      module.add(SOrB32(dst=sgpr(g1+3), src0=sgpr(g1+3), src1=hex((MT0 & 0xFFFF)<<16), comment="tile_dim0=MT0"))
-      module.add(SOrB32(dst=sgpr(g1+4), src0=sgpr(g1+4), src1=hex(MT1 & 0xFFFF), comment="tile_dim1=MT1"))
-      module.add(SMovB32(dst=sgpr(g1+5), src=sgpr(strideD1), comment="sgpr5=StrideD"))
+        module.add(SSubU32(dst=sgpr(rd1), src0=sizeJ, src1=sgpr(rd1), comment="N-colStart"))
+        td0 = rd0   # tensor_dim0 = M (fast, unit-stride dim of col-major D)
+        td1 = rd1   # tensor_dim1 = N (slow, StrideD-strided)
+        module.add(SLShiftLeftB32(dst=sgpr(t), shiftHex=hex(16), src=sgpr(td0))); module.add(SOrB32(dst=sgpr(g1+1), src0=sgpr(g1+1), src1=sgpr(t), comment="tdim0 lo"))
+        module.add(SLShiftRightB32(dst=sgpr(t), shiftHex=hex(16), src=sgpr(td0))); module.add(SOrB32(dst=sgpr(g1+2), src0=sgpr(g1+2), src1=sgpr(t), comment="tdim0 hi"))
+        module.add(SLShiftLeftB32(dst=sgpr(t), shiftHex=hex(16), src=sgpr(td1))); module.add(SOrB32(dst=sgpr(g1+2), src0=sgpr(g1+2), src1=sgpr(t), comment="tdim1 lo"))
+        module.add(SLShiftRightB32(dst=sgpr(t), shiftHex=hex(16), src=sgpr(td1))); module.add(SOrB32(dst=sgpr(g1+3), src0=sgpr(g1+3), src1=sgpr(t), comment="tdim1 hi"))
+      tile0 = MT0   # tile_dim0 = M (fast, unit-stride in col-major D)
+      tile1 = MT1   # tile_dim1 = N (slow, StrideD-strided)
+      module.add(SOrB32(dst=sgpr(g1+3), src0=sgpr(g1+3), src1=hex((tile0 & 0xFFFF)<<16), comment="tile_dim0=%d"%tile0))
+      module.add(SOrB32(dst=sgpr(g1+4), src0=sgpr(g1+4), src1=hex(tile1 & 0xFFFF), comment="tile_dim1=%d"%tile1))
+      # tensor_dim0_stride (g1+5, applied to slow tile_dim1=N) = StrideD; fast tile_dim0=M
+      # is hardwired unit-stride.  tensor_dim1_stride (g1+6/g1+7) stays 0 (2D tile).
+      module.add(SMovB32(dst=sgpr(g1+5), src=sgpr(strideD1), comment="sgpr5=StrideD (N slow-dim pitch); M fast dim is unit"))
       inst = TensorStoreFromLds(sgpr(g0,4), sgpr(g1,8), None, None, "TDM hybrid store D NonEdge full tile")
       inst.setMemToken(MemTokenData([self.states.memTokenLdsBuffer0]))
       module.add(inst)

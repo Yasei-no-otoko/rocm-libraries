@@ -132,6 +132,7 @@ def getRequiredParametersMin() -> set:
         'TDMInst',
         "TDMSplit",
         "TDMStoreInst",
+        "TDMStoreInstAllowSS",
         "TDMIterateMode",
         "MXScaleFormat",
         "MXLoadInst",

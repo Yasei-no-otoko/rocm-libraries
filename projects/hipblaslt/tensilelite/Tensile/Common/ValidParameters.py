@@ -1079,6 +1079,18 @@ validParameters = { # we need to make sure this matches develop
     # are not split regardless of this flag. When True, two extra SGPRs are allocated to
     # hold the per-iteration LDS and global address increments for the split loads.
     "TDMSplit": [False, True],
+    "TDMStoreEdge": [False, True],
+    # TDMStoreInst (gfx1250, requires asmCaps HasTDM): full-tile Tensor Data
+    # Mover store for the GEMM epilogue. Treats a full OR partial output tile as
+    # one full tile -- the entire padded MacroTile (including dummy rows/cols past
+    # M/N) runs through the complete epilogue (alpha/beta, bias, scaleA/B,
+    # scaleAlphaVec, activation), is staged M-contiguous into an LDS scratch tile,
+    # then flushed with a single coalesced tensor_store_from_lds. The 2D TDM
+    # descriptor clamps the OOB/dummy region at write-out via tensor_dim0/1, so the
+    # store needs no per-element edge masking. This avoids the partial-tile
+    # scalar-collapse of the buffer_store path on aligned/even edges and is a large
+    # epilogue speedup there; tiles it cannot route fall back to the subtile store.
+    "TDMStoreInst": [False, True],
     # In-device layout of the MX scale tensors (MXSA/MXSB).
     # User-facing values:
     #   "NoSwizzle":       no swizzling; plain row/column layout (this is the default

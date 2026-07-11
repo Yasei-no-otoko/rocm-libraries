@@ -36,8 +36,7 @@ static const std::vector<std::vector<size_t>> multi_gpu_sizes = {
     {64, 128, 256},
     {96, 160, 192},
 };
-// Only in-place, unbatched use cases are supported for multi-device
-// transforms with rocfft backend for now.
+
 static const std::vector<size_t>        multi_gpu_batch_range = {4, 1};
 static std::vector<std::vector<size_t>> ioffset_range_zero    = {{0, 0}};
 static std::vector<std::vector<size_t>> ooffset_range_zero    = {{0, 0}};
@@ -77,29 +76,24 @@ std::vector<fft_params> param_generator_multi_gpu(const std::optional<SplitType>
 
     static const std::vector<std::vector<size_t>> stride_range = {{1}};
 
-    // gather cases to test as single-device params, then distribute
-    // to multiple GPUs
-    std::vector<fft_params> params_single;
-
     // function pointer callbacks need -fgpu-rdc, but that causes build
     // nondeterminism in kpack
     auto multi_device_callbacks = {fft_callback_type_none, /*fft_callback_type_funcptr, */};
 
-    {
-        auto params = param_generator(test_prob,
-                                      multi_gpu_sizes,
-                                      precision_range_sp_dp,
-                                      multi_gpu_batch_range,
-                                      stride_generator(stride_range),
-                                      stride_generator(stride_range),
-                                      ioffset_range_zero,
-                                      ooffset_range_zero,
-                                      {fft_placement_inplace},
-                                      false,
-                                      multi_device_callbacks,
-                                      auto_alloc_setting);
-        std::copy(params.begin(), params.end(), std::back_inserter(params_single));
-    }
+    // gather cases to test as single-device params, then distribute
+    // to multiple GPUs
+    auto params_single = param_generator(test_prob,
+                                         multi_gpu_sizes,
+                                         precision_range_sp_dp,
+                                         multi_gpu_batch_range,
+                                         stride_generator(stride_range),
+                                         stride_generator(stride_range),
+                                         ioffset_range_zero,
+                                         ooffset_range_zero,
+                                         place_range,
+                                         false,
+                                         multi_device_callbacks,
+                                         auto_alloc_setting);
 
     std::vector<fft_params> all_params;
 

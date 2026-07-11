@@ -212,6 +212,26 @@ if(HIPBLASLT_BUNDLE_PYTHON_DEPS OR ROCISA_STANDALONE)
     # In a released build, installed stinkytofu is a standard ROCm library on the
     # loader's search path (like libyaml behind PyYAML); _rocisa's DT_NEEDED
     # resolves it from there, so no wheel-local copy or RPATH is needed.
+
+    # Co-locate _rocisa's shared runtime dependencies (origami when built shared,
+    # and any others) next to _rocisa.pyd on Windows. Since Python 3.8 the loader
+    # searches only the system paths, the directory containing the .pyd, and
+    # os.add_dll_directory() entries for an extension's load-time dependencies --
+    # PATH is ignored -- so the build-time device-library codegen import fails
+    # unless the DLLs sit beside _rocisa.pyd. TARGET_RUNTIME_DLLS is the documented
+    # CMake pattern for this (valid for MODULE targets) and resolves the full
+    # transitive set from the imported/linked targets, so it stays correct as
+    # dependencies change. It expands to empty on non-DLL platforms, making this a
+    # no-op on Linux (where the loader resolves liborigami.so via the RPATH/install
+    # layout).
+    if(WIN32)
+        add_custom_command(TARGET _rocisa POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                $<TARGET_RUNTIME_DLLS:_rocisa>
+                $<TARGET_FILE_DIR:_rocisa>
+            COMMAND_EXPAND_LISTS
+        )
+    endif()
     configure_file(
         "${CMAKE_CURRENT_SOURCE_DIR}/rocisa/__init__.py"
         "${CMAKE_CURRENT_BINARY_DIR}/rocisa/__init__.py"

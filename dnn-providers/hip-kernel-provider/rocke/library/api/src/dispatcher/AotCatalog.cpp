@@ -53,6 +53,7 @@ const char* defaultArtifactRoot()
     // e.g. arch_content/aiter/, arch_content/asm/) and, unlike a
     // "hip_kernel_provider/" directory, does not collide with the
     // hip_kernel_provider(.dll/.so) plugin file in the same engines dir.
+    return "arch_content/rocke";
 }
 
 } // namespace rocke_client::dispatcher

@@ -25,7 +25,7 @@
           "properties": {
             "hsaco_filename": {
               "type": "string",
-              "pattern": "^sdpa_fwd_fmha_fwd_mfma_fp16_bshd_gfx[0-9A-Za-z]+_q[0-9]+_k[0-9]+_hq[0-9]+_hkv[0-9]+_d(32|64|128|192|256)_none\\.hsaco$"
+              "pattern": "^sdpa_fwd_fmha_fwd_mfma_fp16_bshd_gfx[0-9A-Za-z]+_q[0-9]+_k[0-9]+_hq[0-9]+_hkv[0-9]+_d(32|64|128|192|256)_none\\.co$"
             },
             "symbol": {
               "type": "string",

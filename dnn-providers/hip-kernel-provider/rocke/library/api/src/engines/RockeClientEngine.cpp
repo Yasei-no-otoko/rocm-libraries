@@ -73,11 +73,11 @@ size_t RockeClientEngine::getMaxWorkspaceSize(
     }
 
     // TODO(kpack): return the workspace size from the winning instance's sidecar
-    // launch metadata once PR #8866's kpack packaging lands. No AOT plan can be
+    // launch metadata once the runtime AOT loader lands. No AOT plan can be
     // built yet, so decline rather than report a bogus size.
     throw hipdnn_plugin_sdk::HipdnnPluginException(
         HIPDNN_PLUGIN_STATUS_NOT_APPLICABLE,
-        "rocke-client: AOT plan construction (kpack) not yet implemented");
+        "rocke-client: AOT plan construction (loader) not yet implemented");
 }
 
 void RockeClientEngine::initializeExecutionContext(
@@ -95,18 +95,18 @@ void RockeClientEngine::initializeExecutionContext(
     }
 
     // A winning instance was selected -- this is the plan-construction seam.
-    // TODO(kpack): once PR #8866's kpack packaging lands, replace this decline with:
+    // TODO(kpack): once the runtime AOT loader lands, replace this decline with:
     //   1. resolve kernel_id (cache_key) + launch metadata from the instance's sidecar;
-    //   2. load the pre-built HSACO from the kpack (hipModuleLoad/hipModuleGetFunction);
+    //   2. load the pre-built <name>.co (hipModuleLoad/hipModuleGetFunction);
     //   3. evaluate the symbolic grid_formula -> concrete grid[3];
     //   4. executionContext.setExecutionSettings(RockeClientSettings{});
     //   5. executionContext.setPlan(std::make_unique<RockeClientPlan>(module, params, launchMeta));
     HIPDNN_PLUGIN_LOG_WARN("rocke-client selected AOT instance '"
                            << instance->name
-                           << "' but plan construction (kpack) is not implemented yet");
+                           << "' but plan construction (loader) is not implemented yet");
     throw hipdnn_plugin_sdk::HipdnnPluginException(
         HIPDNN_PLUGIN_STATUS_NOT_APPLICABLE,
-        "rocke-client: AOT plan construction (kpack) not yet implemented");
+        "rocke-client: AOT plan construction (loader) not yet implemented");
 }
 
 } // namespace rocke_client

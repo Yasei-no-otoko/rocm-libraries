@@ -296,7 +296,7 @@ def test_instance_name_must_match_compile_spec(tmp_path):
 def test_sidecar_required_fields_launch_signature_and_hashes(arch, expected_block):
     parsed = parse_instance_list(_aot_list_path(arch), handler_path=HANDLER)[0]
     hsaco_bytes = b"not-a-real-hsaco-for-sidecar-unit-tests"
-    hsaco_filename = f"{parsed.data['name']}.hsaco"
+    hsaco_filename = f"{parsed.data['name']}.co"
     artifact = types.SimpleNamespace(
         kernel_name="rocke_fmha_fwd_mfma_unit_test",
         hsaco=hsaco_bytes,
@@ -373,7 +373,7 @@ def test_build_cli_uses_python_comgr_path_and_writes_sidecar(tmp_path, monkeypat
         assert getattr(instance, "data", instance) == instance_data
         assert spec is fake_spec
         assert artifact.kernel_name == "rocke_fmha_fwd_mfma_fake_kernel"
-        assert hsaco_filename == f"{instance_data['name']}.hsaco"
+        assert hsaco_filename == f"{instance_data['name']}.co"
         digest = "0" * 64
         return {
             "schema": "rocke.aot.sidecar/v1",
@@ -494,7 +494,7 @@ def test_build_cli_uses_python_comgr_path_and_writes_sidecar(tmp_path, monkeypat
     assert calls[0]["arch"] == "gfx1151"
     assert calls[0]["backend"] == "python"
     assert calls[0]["capture_ir_text"] is False
-    hsaco_path = tmp_path / f"{instance_data['name']}.hsaco"
+    hsaco_path = tmp_path / f"{instance_data['name']}.co"
     assert hsaco_path.read_bytes() == b"fake-hsaco"
     sidecar = _read_json(tmp_path / f"{instance_data['name']}.sidecar.json")
     assert (
@@ -553,7 +553,7 @@ def test_build_one_cleans_artifacts_when_sidecar_fails(
             SCHEMA_DIR / "sidecar.schema.json",
         )
 
-    assert not (tmp_path / f"{instance_data['name']}.hsaco").exists()
+    assert not (tmp_path / f"{instance_data['name']}.co").exists()
     assert not (tmp_path / f"{instance_data['name']}.sidecar.json").exists()
     assert sorted(path.name for path in tmp_path.iterdir()) == ["aot_list.json"]
 
@@ -582,9 +582,9 @@ def test_build_module_internal_fallbacks_and_stale_cleanup(tmp_path):
     with pytest.raises(TypeError, match="spec or fmha_spec"):
         build_module._parsed_spec(object())
 
-    stale_hsaco = tmp_path / "old.hsaco"
+    stale_hsaco = tmp_path / "old.co"
     stale_sidecar = tmp_path / "old.sidecar.json"
-    stale_dir = tmp_path / "dir.hsaco"
+    stale_dir = tmp_path / "dir.co"
     keep = tmp_path / "keep.txt"
     stale_hsaco.write_bytes(b"old")
     stale_sidecar.write_text("{}", encoding="utf-8")
@@ -750,13 +750,13 @@ def test_sidecar_accepts_instance_mapping_and_instance_attr_fallback():
     )
 
     direct = parsed.actions.emit_sidecar(
-        parsed.data, parsed.spec, artifact, f"{parsed.data['name']}.hsaco"
+        parsed.data, parsed.spec, artifact, f"{parsed.data['name']}.co"
     )
     fallback = parsed.actions.emit_sidecar(
         types.SimpleNamespace(instance=parsed.data),
         parsed.spec,
         artifact,
-        f"{parsed.data['name']}.hsaco",
+        f"{parsed.data['name']}.co",
     )
 
     assert direct == fallback
@@ -775,9 +775,7 @@ def test_sidecar_rejects_unsupported_kernel_id():
     )
 
     with pytest.raises(ValueError, match="unsupported sidecar kernel id"):
-        parsed.actions.emit_sidecar(
-            data, parsed.spec, artifact, f"{data['name']}.hsaco"
-        )
+        parsed.actions.emit_sidecar(data, parsed.spec, artifact, f"{data['name']}.co")
 
 
 @pytest.mark.parametrize(
@@ -922,7 +920,7 @@ def _numeric_sidecar():
     ]
     return {
         "artifact": {
-            "hsaco_filename": "kernel.hsaco",
+            "hsaco_filename": "kernel.co",
             "symbol": "kernel_symbol",
             "hsaco_sha256": hashlib.sha256(b"hsaco").hexdigest(),
             "hsaco_size": len(b"hsaco"),
@@ -1133,7 +1131,7 @@ def test_numeric_verify_instance_digest_profiles_and_main(
     tmp_path, monkeypatch, capsys
 ):
     numeric = _load_numeric_tool()
-    hsaco_path = tmp_path / "kernel.hsaco"
+    hsaco_path = tmp_path / "kernel.co"
     sidecar_path = tmp_path / "sample.sidecar.json"
     hsaco_path.write_bytes(b"hsaco")
     sidecar = _numeric_sidecar()

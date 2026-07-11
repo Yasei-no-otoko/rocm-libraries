@@ -7,7 +7,7 @@
 # build-local rocke-pyenv (rocke/CMakeLists.txt), so every Python invocation runs
 # under ${ROCKE_PYENV_PYTHON} and depends on ${ROCKE_PYENV_STAMP}. The only extra
 # import root is this tree's own `rocke_client_aot` tooling package (not part of
-# the editable library install) plus the rocm_kpack source dir for the packer.
+# the editable library install).
 
 if(NOT DEFINED ROCKE_PYENV_PYTHON OR NOT DEFINED ROCKE_PYENV_STAMP)
     message(FATAL_ERROR
@@ -18,70 +18,8 @@ endif()
 
 get_filename_component(_ROCKE_CLIENT_AOT_ROOT "${CMAKE_CURRENT_LIST_DIR}/.." ABSOLUTE)
 set(_ROCKE_CLIENT_AOT_BUILD_TOOL "${_ROCKE_CLIENT_AOT_ROOT}/tools/rocke_aot_build.py")
-set(_ROCKE_CLIENT_AOT_PACK_TOOL "${_ROCKE_CLIENT_AOT_ROOT}/tools/rocke_kpack_pack.py")
 set(_ROCKE_CLIENT_AOT_PYTHON_ROOT "${_ROCKE_CLIENT_AOT_ROOT}/python")
 set(_ROCKE_CLIENT_AOT_SCHEMA_ROOT "${_ROCKE_CLIENT_AOT_ROOT}/schemas")
-set(_ROCKE_CLIENT_AOT_BUNDLE_SCHEMA "${_ROCKE_CLIENT_AOT_SCHEMA_ROOT}/bundle.schema.json")
-
-# engine_build_id / llvm_flavor recorded in the per-arch bundle manifest. Plan 3
-# consumes these for compatibility gating; expose them as overridable cache vars.
-set(ROCKE_AOT_ENGINE_BUILD_ID "rocke-client" CACHE STRING
-    "engine_build_id recorded in rocKE AOT bundle manifests")
-if(NOT DEFINED ROCKE_AOT_LLVM_FLAVOR OR ROCKE_AOT_LLVM_FLAVOR STREQUAL "")
-    if(DEFINED ENV{ROCKE_LLVM_FLAVOR} AND NOT "$ENV{ROCKE_LLVM_FLAVOR}" STREQUAL "")
-        set(ROCKE_AOT_LLVM_FLAVOR "$ENV{ROCKE_LLVM_FLAVOR}")
-    else()
-        set(ROCKE_AOT_LLVM_FLAVOR "llvm20")
-    endif()
-endif()
-
-# --- rocm_kpack source availability -----------------------------------------
-# The packer imports rocm_kpack from source (never pip). Resolve the source dir
-# from ROCKE_KPACK_PYTHON_DIR (TheRock passes it; overridable standalone) or the
-# ambient PYTHONPATH, and gate loud at configure time -- never silently skip.
-if(DEFINED ROCKE_KPACK_PYTHON_DIR AND NOT "${ROCKE_KPACK_PYTHON_DIR}" STREQUAL "")
-    set(_ROCKE_KPACK_PYTHON_DIR "${ROCKE_KPACK_PYTHON_DIR}")
-elseif(DEFINED ENV{ROCKE_KPACK_PYTHON_DIR} AND NOT "$ENV{ROCKE_KPACK_PYTHON_DIR}" STREQUAL "")
-    set(_ROCKE_KPACK_PYTHON_DIR "$ENV{ROCKE_KPACK_PYTHON_DIR}")
-else()
-    set(_ROCKE_KPACK_PYTHON_DIR "")
-endif()
-
-if(NOT "${_ROCKE_KPACK_PYTHON_DIR}" STREQUAL "")
-    get_filename_component(_ROCKE_KPACK_PYTHON_DIR "${_ROCKE_KPACK_PYTHON_DIR}" ABSOLUTE)
-    if(NOT EXISTS "${_ROCKE_KPACK_PYTHON_DIR}/rocm_kpack/kpack.py")
-        message(FATAL_ERROR
-            "ROCKE_KPACK_PYTHON_DIR does not contain rocm_kpack/kpack.py: "
-            "${_ROCKE_KPACK_PYTHON_DIR}"
-        )
-    endif()
-    message(STATUS "rocKE AOT kpack packer: rocm_kpack from ${_ROCKE_KPACK_PYTHON_DIR}")
-else()
-    # No explicit dir: rocm_kpack must be importable from the ambient environment
-    # (local dev). find_spec locates a top-level package without executing it.
-    #
-    # This checks the system Python3, whereas the packer runs under the not-yet-
-    # built ROCKE_PYENV_PYTHON. That is an adequate proxy only because the pyenv
-    # is a --system-site-packages venv of this same base interpreter and
-    # rocm_kpack is never pip-installed into it, so ambient importability is
-    # shared. If that assumption changes, prefer the explicit
-    # ROCKE_KPACK_PYTHON_DIR path above, which filesystem-checks rocm_kpack.
-    find_package(Python3 COMPONENTS Interpreter REQUIRED)
-    execute_process(
-        COMMAND "${Python3_EXECUTABLE}" -c
-                "import importlib.util,sys; sys.exit(0 if importlib.util.find_spec('rocm_kpack') else 1)"
-        RESULT_VARIABLE _ROCKE_KPACK_IMPORT_RESULT
-        OUTPUT_QUIET ERROR_QUIET
-    )
-    if(NOT _ROCKE_KPACK_IMPORT_RESULT EQUAL 0)
-        message(FATAL_ERROR
-            "rocm_kpack is not importable and ROCKE_KPACK_PYTHON_DIR is unset. "
-            "Set -DROCKE_KPACK_PYTHON_DIR=<rocm-systems>/shared/kpack/python (or put "
-            "rocm_kpack on PYTHONPATH). The kpack packer requires it."
-        )
-    endif()
-    message(STATUS "rocKE AOT kpack packer: rocm_kpack found on the ambient environment")
-endif()
 
 # --- libamd_comgr availability (compile_kernel backend="python") -------------
 # rocke.helpers.compile_kernel ctypes-loads libamd_comgr at build time. We locate
@@ -134,11 +72,11 @@ file(GLOB _ROCKE_CLIENT_AOT_COMMON_SCHEMA_DEPENDS CONFIGURE_DEPENDS
     "${_ROCKE_CLIENT_AOT_SCHEMA_ROOT}/*.schema.json"
 )
 
-# The HSACO bytes are determined by the kernels package (builders/signatures) and
+# The .co bytes are determined by the kernels package (builders/signatures) and
 # the rocke platform (compile_kernel lowering). Both are editable-installed in
 # the pyenv, so edits take effect at runtime but the pyenv stamp never re-fires
-# for them. Track their sources so `cmake --build` regenerates HSACO (and thus
-# the .kpack) when the code that produces it changes, rather than shipping stale
+# for them. Track their sources so `cmake --build` regenerates the .co + sidecar
+# artifacts when the code that produces them changes, rather than shipping stale
 # artifacts. Coarse globs: correctness over minimal rebuilds.
 get_filename_component(_ROCKE_LIBRARY_DIR "${_ROCKE_CLIENT_AOT_ROOT}/.." ABSOLUTE)
 get_filename_component(_ROCKE_ROOT_DIR "${_ROCKE_LIBRARY_DIR}/.." ABSOLUTE)
@@ -151,14 +89,10 @@ file(GLOB_RECURSE _ROCKE_CLIENT_AOT_PLATFORM_SOURCES CONFIGURE_DEPENDS
 
 # Return the PYTHONPATH used by rocKE client AOT tooling in OUT_VAR.
 #
-# The pyenv already resolves `rocke` and `kernels`; only this tree's tooling
-# package and the rocm_kpack source dir are prepended. An incoming developer
-# PYTHONPATH is preserved last.
+# The pyenv already resolves `rocke` and `kernels`; this tree's tooling package
+# is prepended, followed by an incoming developer PYTHONPATH.
 function(rocke_client_aot_pythonpath OUT_VAR)
     set(_ROCKE_CLIENT_AOT_PYTHONPATH "${_ROCKE_CLIENT_AOT_PYTHON_ROOT}")
-    if(NOT "${_ROCKE_KPACK_PYTHON_DIR}" STREQUAL "")
-        list(APPEND _ROCKE_CLIENT_AOT_PYTHONPATH "${_ROCKE_KPACK_PYTHON_DIR}")
-    endif()
     if(DEFINED ENV{PYTHONPATH} AND NOT "$ENV{PYTHONPATH}" STREQUAL "")
         cmake_path(CONVERT "$ENV{PYTHONPATH}" TO_CMAKE_PATH_LIST
                    _ROCKE_CLIENT_AOT_INCOMING_PYTHONPATH)
@@ -192,10 +126,10 @@ function(rocke_client_aot_pythonpath_environment OUT_VAR)
     set(${OUT_VAR} "${_ROCKE_CLIENT_AOT_ENV}" PARENT_SCOPE)
 endfunction()
 
-# Derive the per-instance HSACO + sidecar output paths from an aot_list.json
-# array (one object per instance, keyed by "name"). Returns two lists in
-# GEN_VAR (hsaco + sidecar) and SIDE_VAR (sidecar only) in the caller scope.
-function(_rocke_client_aot_derive_outputs GEN_VAR SIDE_VAR ARCH_OUTPUT_DIR AOT_LIST)
+# Derive the per-instance .co + sidecar output paths from an aot_list.json
+# array (one object per instance, keyed by "name"). Returns a single list in
+# GEN_VAR (.co + sidecar paths) in the caller scope.
+function(_rocke_client_aot_derive_outputs GEN_VAR ARCH_OUTPUT_DIR AOT_LIST)
     file(READ "${AOT_LIST}" _JSON)
     string(JSON _COUNT ERROR_VARIABLE _JSON_ERROR LENGTH "${_JSON}")
     if(_JSON_ERROR)
@@ -205,71 +139,27 @@ function(_rocke_client_aot_derive_outputs GEN_VAR SIDE_VAR ARCH_OUTPUT_DIR AOT_L
         message(FATAL_ERROR "No rocKE client AOT instances found in ${AOT_LIST}")
     endif()
     set(_GEN)
-    set(_SIDE)
     set(_INDEX 0)
     while(_INDEX LESS _COUNT)
         string(JSON _NAME GET "${_JSON}" ${_INDEX} "name")
-        list(APPEND _GEN "${ARCH_OUTPUT_DIR}/${_NAME}.hsaco"
+        list(APPEND _GEN "${ARCH_OUTPUT_DIR}/${_NAME}.co"
              "${ARCH_OUTPUT_DIR}/${_NAME}.sidecar.json")
-        list(APPEND _SIDE "${ARCH_OUTPUT_DIR}/${_NAME}.sidecar.json")
         math(EXPR _INDEX "${_INDEX} + 1")
     endwhile()
     set(${GEN_VAR} "${_GEN}" PARENT_SCOPE)
-    set(${SIDE_VAR} "${_SIDE}" PARENT_SCOPE)
 endfunction()
 
-# Pack one architecture's HSACO into its own rocke_client_<arch>.kpack + bundle
-# manifest and register the install rules. Per-arch files carry the arch in their
-# name so a multi-arch build -- or TheRock's per-family artifact union -- merges
-# them by simple co-location, with no kpack fusing. Split from
-# rocke_client_add_aot_instances to stay within the cmake-lint statement budget.
-# Positional: NAME ARCH; the per-instance sidecar outputs follow as ARGN. The
-# per-arch build dir and stamp are reconstructed from NAME/ARCH.
-function(_rocke_client_aot_pack_and_install NAME ARCH)
-    rocke_client_aot_pythonpath_environment(_AOT_ENV)
-    set(_SIDECAR_OUTPUTS ${ARGN})
-    set(_ARCH_OUTPUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/artifacts/${ARCH}/${NAME}")
-    set(_BUILD_STAMP "${_ARCH_OUTPUT_DIR}/build.stamp")
-    set(_KPACK_OUTPUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/kpack/${ARCH}")
-    set(_KPACK_FILE "${_KPACK_OUTPUT_DIR}/rocke_client_${ARCH}.kpack")
-    set(_KPACK_MANIFEST "${_KPACK_OUTPUT_DIR}/rocke_client_${ARCH}.json")
-    add_custom_command(
-        OUTPUT "${_KPACK_FILE}" "${_KPACK_MANIFEST}"
-        COMMAND "${CMAKE_COMMAND}" -E make_directory "${_KPACK_OUTPUT_DIR}"
-        COMMAND "${CMAKE_COMMAND}" -E env ${_AOT_ENV}
-                "${ROCKE_PYENV_PYTHON}" "${_ROCKE_CLIENT_AOT_PACK_TOOL}"
-                --artifact-dir "${_ARCH_OUTPUT_DIR}"
-                --arch "${ARCH}"
-                --out-dir "${_KPACK_OUTPUT_DIR}"
-                --engine-build-id "${ROCKE_AOT_ENGINE_BUILD_ID}"
-                --llvm-flavor "${ROCKE_AOT_LLVM_FLAVOR}"
-                --bundle-schema "${_ROCKE_CLIENT_AOT_BUNDLE_SCHEMA}"
-        DEPENDS "${ROCKE_PYENV_STAMP}"
-                "${_BUILD_STAMP}"
-                ${_SIDECAR_OUTPUTS}
-                "${_ROCKE_CLIENT_AOT_PACK_TOOL}"
-                "${_ROCKE_CLIENT_AOT_BUNDLE_SCHEMA}"
-                ${_ROCKE_CLIENT_AOT_PACKAGE_MODULES}
-        VERBATIM
-        COMMENT "Pack rocKE client ${ARCH} AOT kpack + bundle manifest"
-    )
-    add_custom_target("${NAME}_kpack"
-        DEPENDS "${_KPACK_FILE}" "${_KPACK_MANIFEST}"
-        COMMENT "Pack ${NAME} kpack + manifest"
-    )
-    add_dependencies("${NAME}_kpack" "${NAME}")
-    add_dependencies(rocke_client_aot_kpack "${NAME}_kpack")
-
-    # Per-arch, single source of truth: the .kpack + its manifest only. The
-    # manifest carries every selection/launch field; aot_list.json is a
-    # build-time input and is intentionally not installed.
+# Install one architecture's loose per-kernel .co + .sidecar.json files.
+# Per-arch files carry the arch in their name so a multi-arch build -- or
+# TheRock's per-family artifact union -- merges them by simple co-location.
+# Positional: NAME ARCH; the generated .co + sidecar outputs follow as ARGN.
+function(_rocke_client_aot_install NAME ARCH)
     set(_INSTALL_ROOT
         "${HIPDNN_RELATIVE_INSTALL_PLUGIN_ENGINE_DIR}/arch_content/rocke/${ARCH}")
-    install(FILES "${_KPACK_FILE}" "${_KPACK_MANIFEST}" DESTINATION "${_INSTALL_ROOT}")
+    install(FILES ${ARGN} DESTINATION "${_INSTALL_ROOT}")
 endfunction()
 
-# Register one AOT kernel architecture instance list, its kpack packing, and
-# install rules.
+# Register one AOT kernel architecture instance list and its install rules.
 #
 # Required arguments:
 #   NAME      Target name and per-arch artifact directory component.
@@ -289,9 +179,9 @@ function(rocke_client_add_aot_instances)
         )
     endif()
 
-    if(NOT TARGET rocke_client_aot_artifacts OR NOT TARGET rocke_client_aot_kpack)
+    if(NOT TARGET rocke_client_aot_artifacts)
         message(FATAL_ERROR
-            "Create rocke_client_aot_artifacts and rocke_client_aot_kpack before "
+            "Create rocke_client_aot_artifacts before "
             "calling rocke_client_add_aot_instances"
         )
     endif()
@@ -325,13 +215,13 @@ function(rocke_client_add_aot_instances)
     set(_ARCH_OUTPUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/artifacts/${ARG_ARCH}/${ARG_NAME}")
     set(_BUILD_STAMP "${_ARCH_OUTPUT_DIR}/build.stamp")
 
-    # Derive the generated HSACO and sidecar outputs from the instance names in
+    # Derive the generated .co and sidecar outputs from the instance names in
     # aot_list.json so Ninja tracks each artifact precisely.
     _rocke_client_aot_derive_outputs(
-        _GENERATED_OUTPUTS _SIDECAR_OUTPUTS "${_ARCH_OUTPUT_DIR}" "${_AOT_LIST}")
+        _GENERATED_OUTPUTS "${_ARCH_OUTPUT_DIR}" "${_AOT_LIST}")
 
     # Recreate the artifact directory on every rebuild so removed/renamed
-    # instances cannot leave stale HSACO or sidecar files behind.
+    # instances cannot leave stale .co or sidecar files behind.
     add_custom_command(
         OUTPUT "${_BUILD_STAMP}" ${_GENERATED_OUTPUTS}
         COMMAND "${CMAKE_COMMAND}" -E remove_directory "${_ARCH_OUTPUT_DIR}"
@@ -363,8 +253,8 @@ function(rocke_client_add_aot_instances)
     )
     add_dependencies(rocke_client_aot_artifacts "${ARG_NAME}")
 
-    # kpack pack + bundle manifest + install rules (split out to keep this
+    # Per-arch install: loose .co + sidecar files (split out to keep this
     # registration function within the cmake-lint statement budget).
-    _rocke_client_aot_pack_and_install(
-        "${ARG_NAME}" "${ARG_ARCH}" ${_SIDECAR_OUTPUTS})
+    _rocke_client_aot_install(
+        "${ARG_NAME}" "${ARG_ARCH}" ${_GENERATED_OUTPUTS})
 endfunction()

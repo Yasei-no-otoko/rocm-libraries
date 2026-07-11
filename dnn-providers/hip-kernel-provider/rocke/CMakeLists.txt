@@ -65,9 +65,9 @@ if(ROCKE_BUILD_PYENV)
         COMMAND "${ROCKE_PYENV_PYTHON}" -m pip install -q --no-deps
                 --config-settings editable_mode=compat
                 -e "${CMAKE_CURRENT_SOURCE_DIR}/library"
-        # library is installed --no-deps, so the AOT producer + kpack packer
-        # third-party deps (jsonschema, zstandard, msgpack, ...) live here. This
-        # is their only home; see library/aot/requirements.txt.
+        # library is installed --no-deps, so the AOT producer third-party deps
+        # (jsonschema, numpy, ...) live here. This is their only home; see
+        # library/aot/requirements.txt.
         COMMAND "${ROCKE_PYENV_PYTHON}" -m pip install -q -r "${_ROCKE_AOT_REQUIREMENTS}"
         COMMAND "${CMAKE_COMMAND}" -E touch "${ROCKE_PYENV_STAMP}"
         DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/platform/pyproject.toml"

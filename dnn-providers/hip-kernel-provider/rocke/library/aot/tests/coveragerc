@@ -2,9 +2,7 @@
 #
 # The --fail-under=90 gate (wired in aot/CMakeLists.txt) is scoped to the
 # reliably-exercised producer surface: the rocke_client_aot package, the SDPA
-# family handler, and the AOT build tool. The kpack packer is excluded because it
-# imports rocm_kpack, which is environment-dependent (its own tests skip where
-# rocm_kpack is unavailable), so it must not drag the deterministic gate.
+# family handler, and the AOT build tool.
 [run]
 branch = True
 relative_files = True

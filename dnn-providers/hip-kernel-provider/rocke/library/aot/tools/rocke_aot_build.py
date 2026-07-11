@@ -19,7 +19,7 @@ from rocke.helpers import compile_kernel
 from rocke_client_aot.instance_schema import AOT_LIST_FILENAME, parse_instance_list
 from rocke_client_aot.json_schema import load_json_schema, validate_json_schema
 
-_STALE_OUTPUT_PATTERNS = ("*.hsaco", "*.sidecar.json")
+_STALE_OUTPUT_PATTERNS = ("*.co", "*.sidecar.json")
 _HIPCC_ENV_KEYS = frozenset(
     {
         "ROCKE_AOT_BACKEND",
@@ -169,7 +169,7 @@ def _build_one(
     artifact_dir: Path,
     sidecar_schema_path: Path,
 ) -> tuple[Path, Path]:
-    """Build the HSACO and sidecar artifacts for one parsed instance."""
+    """Build the .co and sidecar artifacts for one parsed instance."""
 
     instance_data = _parsed_instance_data(parsed)
     spec = _parsed_spec(parsed)
@@ -189,29 +189,29 @@ def _build_one(
         capture_ir_text=False,
     )
 
-    hsaco_path = artifact_dir / f"{name}.hsaco"
+    co_path = artifact_dir / f"{name}.co"
     sidecar_path = artifact_dir / f"{name}.sidecar.json"
-    hsaco_temp_path: Path | None = None
+    co_temp_path: Path | None = None
     sidecar_temp_path: Path | None = None
     try:
-        hsaco_temp_path = _temporary_artifact_path(hsaco_path)
+        co_temp_path = _temporary_artifact_path(co_path)
         sidecar_temp_path = _temporary_artifact_path(sidecar_path)
 
-        hsaco_temp_path.write_bytes(artifact.hsaco)
-        sidecar = parsed.actions.emit_sidecar(parsed, spec, artifact, hsaco_path.name)
+        co_temp_path.write_bytes(artifact.hsaco)
+        sidecar = parsed.actions.emit_sidecar(parsed, spec, artifact, co_path.name)
         _validate_json_value(sidecar, sidecar_schema_path)
         _write_json(sidecar_temp_path, sidecar)
         _validate_json_file(sidecar_temp_path, sidecar_schema_path)
 
-        os.replace(hsaco_temp_path, hsaco_path)
-        hsaco_temp_path = None
+        os.replace(co_temp_path, co_path)
+        co_temp_path = None
         os.replace(sidecar_temp_path, sidecar_path)
         sidecar_temp_path = None
     finally:
-        for temp_path in (hsaco_temp_path, sidecar_temp_path):
+        for temp_path in (co_temp_path, sidecar_temp_path):
             if temp_path is not None:
                 temp_path.unlink(missing_ok=True)
-    return hsaco_path, sidecar_path
+    return co_path, sidecar_path
 
 
 def main(argv: Sequence[str] | None = None) -> int:

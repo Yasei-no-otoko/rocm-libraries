@@ -16,12 +16,12 @@ namespace rocke_client::dispatcher
 // The set of AOT-built kernel instances the dispatcher can select from.
 //
 // PHASE 1 (this ticket): the production catalog is ALWAYS EMPTY. The rocKE AOT
-// producer (PR #8866) currently emits loose build-tree HSACO + sidecar files
-// only -- it has no install rules, no kpack packaging, and no runtime catalog.
-// Until that lands, `loadDefault()` returns an empty catalog and the engine
-// therefore declines every graph (a deliberate no-op). The selection logic is
-// still real and fully exercised in unit tests via catalogs constructed from
-// fixture instances.
+// producer installs loose per-kernel .co + .sidecar.json files under
+// <plugin_dir>/arch_content/rocke/<arch>/. The remaining TODO is the runtime
+// loader that reads those files and populates the catalog. Until that lands,
+// `loadDefault()` returns an empty catalog and the engine therefore declines
+// every graph (a deliberate no-op). The selection logic is still real and fully
+// exercised in unit tests via catalogs constructed from fixture instances.
 class AotCatalog
 {
 public:
@@ -30,16 +30,14 @@ public:
 
     // The production catalog source.
     //
-    // TODO(kpack): once the kpack packaging + install rules land (this ticket),
-    // this must:
-    //   1. resolve the loaded plugin's directory and the per-arch bundle root
+    // TODO(kpack): implement the runtime loader. This must:
+    //   1. resolve the loaded plugin's directory and the per-arch artifact root
     //      <plugin_dir>/arch_content/rocke/<arch>/ (see defaultArtifactRoot());
-    //   2. read that arch's rocke_client_<arch>.kpack + rocke_client_<arch>.json
-    //      bundle manifest (the installed source of truth; aot_list.json is a
-    //      build-time input and is not installed);
-    //   3. parse each instance (compile_spec + selection.batch + attribute_constraints)
-    //      into AotInstance, mirroring rocke_client_aot.instance_schema semantics;
-    //   4. (plan-construction, separate) index the matching sidecars by cache_key.
+    //   2. enumerate that arch's *.co + *.sidecar.json pairs (the installed
+    //      source of truth; aot_list.json is a build-time input, not installed);
+    //   3. parse each sidecar instance (compile_spec + selection +
+    //      attribute_constraints) into AotInstance, mirroring
+    //      rocke_client_aot.instance_schema semantics.
     // For now it logs the deferral and returns an empty catalog.
     static AotCatalog loadDefault();
 

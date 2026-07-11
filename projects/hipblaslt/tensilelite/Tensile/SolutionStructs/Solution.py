@@ -2412,6 +2412,14 @@ class Solution(collections.abc.Mapping):
         reject(state, printRejectionReason, "This arch does not support TDM")
         return
 
+    # TDMStore (whole-MacroTile tensor_store_from_lds epilogue store) requires the
+    # Tensor Data Mover engine; reject on arches without HasTDM. Mirrors the
+    # TDMInst guard above.
+    if state["TDMStore"]:
+      if not isaInfoMap[isa].asmCaps["HasTDM"]:
+        reject(state, printRejectionReason, "TDMStore requires TDM (this arch does not support TDM)")
+        return
+
     if state["CompactLoopStore"]:
       if not isaInfoMap[isa].asmCaps["HasMovRelsD2B32"]:
         reject(state, printRejectionReason, "This arch does not support CompactLoopStore (no v_movrelsd_2_b32)")

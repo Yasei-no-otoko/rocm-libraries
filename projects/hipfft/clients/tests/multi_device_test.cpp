@@ -38,7 +38,7 @@ static const std::vector<std::vector<size_t>> multi_gpu_sizes = {
 };
 // Only in-place, unbatched use cases are supported for multi-device
 // transforms with rocfft backend for now.
-static const std::vector<size_t>        multi_gpu_batch_range = {1};
+static const std::vector<size_t>        multi_gpu_batch_range = {4, 1};
 static std::vector<std::vector<size_t>> ioffset_range_zero    = {{0, 0}};
 static std::vector<std::vector<size_t>> ooffset_range_zero    = {{0, 0}};
 

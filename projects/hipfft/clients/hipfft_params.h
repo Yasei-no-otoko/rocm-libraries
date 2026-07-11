@@ -830,12 +830,13 @@ public:
                 xt_output = hipfftLibXtDesc_wrapper_t::make_nonowned(xt_input.get_raw());
                 continue;
             }
-            auto&      xt_desc        = (io == fft_io::fft_io_in) ? xt_input : xt_output;
-            const auto xt_desc_format = placement == fft_placement_inplace
-                                            ? (is_forward() ? HIPFFT_XT_FORMAT_INPLACE
-                                                            : HIPFFT_XT_FORMAT_INPLACE_SHUFFLED)
-                                            : (io == fft_io::fft_io_in ? HIPFFT_XT_FORMAT_INPUT
-                                                                       : HIPFFT_XT_FORMAT_OUTPUT);
+            auto&      xt_desc = (io == fft_io::fft_io_in) ? xt_input : xt_output;
+            const auto xt_desc_format
+                = placement == fft_placement_inplace
+                      ? (is_forward() || nbatch > 1 ? HIPFFT_XT_FORMAT_INPLACE
+                                                    : HIPFFT_XT_FORMAT_INPLACE_SHUFFLED)
+                      : (io == fft_io::fft_io_in ? HIPFFT_XT_FORMAT_INPUT
+                                                 : HIPFFT_XT_FORMAT_OUTPUT);
             if(xt_desc.alloc_with_err(plan, xt_desc_format) != HIPFFT_SUCCESS)
                 throw std::runtime_error("hipfftXtMalloc failed for " + io_name(io)
                                          + " descriptor");

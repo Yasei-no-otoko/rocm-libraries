@@ -958,7 +958,7 @@ try
 }
 catch(hipfftResult e)
 {
-    HIPFFT_DEBUG_LOG("Bare error code caught");
+    HIPFFT_DEBUG_LOG("Bare error code caught: " + std::to_string(e));
     return e;
 }
 catch(const DEVICEBUF_MEM_USAGE& e)
@@ -1077,10 +1077,6 @@ static hipfftResult hipfftMakePlan_internal(hipfftHandle               plan,
     plan->io_type = iotype;
     if(plan->device_contexts.size() > 1)
     {
-        // We currently do not support multi-batch multi-device transforms.
-        if(number_of_transforms > 1)
-            return HIPFFT_NOT_IMPLEMENTED;
-
         // We currently do not support 1D multi-device transforms.
         if(rm_lengths.size() == 1)
             return HIPFFT_NOT_IMPLEMENTED;
@@ -1118,21 +1114,27 @@ static hipfftResult hipfftMakePlan_internal(hipfftHandle               plan,
             }
             else
             {
-                if(placement != rocfft_placement_inplace)
+                if(number_of_transforms == 1)
                 {
-                    // only in-place support for multi-device transforms for now
-                    continue;
-                }
-                // multi-device, in-place R2C is only HIPFFT_XT_FORMAT_INPLACE --> HIPFFT_XT_FORMAT_INPLACE_SHUFFLED
-                if(iotype.is_real_to_complex() && input_subformat != HIPFFT_XT_FORMAT_INPLACE)
-                {
-                    continue;
-                }
-                // multi-device, in-place C2R is only HIPFFT_XT_FORMAT_INPLACE_SHUFFLED --> HIPFFT_XT_FORMAT_INPLACE
-                if(iotype.is_complex_to_real()
-                   && input_subformat != HIPFFT_XT_FORMAT_INPLACE_SHUFFLED)
-                {
-                    continue;
+                    // only in-place support for unbatched multi-device multi-dimensional transforms
+                    if(placement != rocfft_placement_inplace)
+                    {
+                        continue;
+                    }
+                    // unbatched multi-device multi-dimensional 2D R2C is only
+                    // HIPFFT_XT_FORMAT_INPLACE --> HIPFFT_XT_FORMAT_INPLACE_SHUFFLED
+                    if(rm_lengths.size() == 2 && iotype.is_real_to_complex()
+                       && input_subformat != HIPFFT_XT_FORMAT_INPLACE)
+                    {
+                        continue;
+                    }
+                    // unbatched multi-device multi-dimensional 2D C2R is only
+                    // HIPFFT_XT_FORMAT_INPLACE_SHUFFLED --> HIPFFT_XT_FORMAT_INPLACE
+                    if(rm_lengths.size() == 2 && iotype.is_complex_to_real()
+                       && input_subformat != HIPFFT_XT_FORMAT_INPLACE_SHUFFLED)
+                    {
+                        continue;
+                    }
                 }
             }
 
@@ -1438,6 +1440,12 @@ static hipfftResult hipfftMakePlanMany_internal(hipfftHandle plan,
 
     if(batch <= 0)
         return HIPFFT_INVALID_SIZE;
+
+    // Creating a plan with multiple devices is not supported if the batch size is
+    // smaller than the number of devices: investigations are required to match
+    // source-of-truth behavior (cufft) for this case
+    if(plan->device_contexts.size() > 1 && static_cast<int>(plan->device_contexts.size()) > batch)
+        return HIPFFT_NOT_IMPLEMENTED;
 
     std::vector<size_t>       lengths(n, n + rank);
     hipfft_ionembed_t<size_t> user_ionembed(rank, istride, inembed, ostride, onembed);
@@ -2217,19 +2225,36 @@ try
     if(!desc)
         return HIPFFT_INVALID_VALUE;
 
-    // Only in-place multi-gpu transforms are currently implemented.
-    if(format == HIPFFT_XT_FORMAT_INPUT || format == HIPFFT_XT_FORMAT_OUTPUT
-       || format == HIPFFT_XT_FORMAT_1D_INPUT_SHUFFLED)
+    // unbatched 1D transforms are not supported yet
+    if(plan->transform_lengths.size() == 1 && plan->batch == 1)
         return HIPFFT_NOT_IMPLEMENTED;
-    if(format != HIPFFT_XT_FORMAT_INPLACE && format != HIPFFT_XT_FORMAT_INPLACE_SHUFFLED)
+    // No other value than the following can possibly be accepted for other cases
+    if(format != HIPFFT_XT_FORMAT_INPLACE && format != HIPFFT_XT_FORMAT_INPLACE_SHUFFLED
+       && format != HIPFFT_XT_FORMAT_INPUT && format != HIPFFT_XT_FORMAT_OUTPUT)
+    {
         return HIPFFT_INVALID_VALUE;
-
-    // Real-to-complex is HIPFFT_XT_FORMAT_INPLACE-to-HIPFFT_XT_FORMAT_INPLACE_SHUFFLED.
-    // Complex-to-real is HIPFFT_XT_FORMAT_INPLACE_SHUFFLED-to-HIPFFT_XT_FORMAT_INPLACE.
-    if(plan->io_type.is_real_to_complex() && format != HIPFFT_XT_FORMAT_INPLACE)
-        return HIPFFT_NOT_IMPLEMENTED;
-    if(plan->io_type.is_complex_to_real() && format != HIPFFT_XT_FORMAT_INPLACE_SHUFFLED)
-        return HIPFFT_NOT_IMPLEMENTED;
+    }
+    // batched cases accept everything except
+    if(plan->batch > 1)
+    {
+        if(format == HIPFFT_XT_FORMAT_INPLACE_SHUFFLED)
+            return HIPFFT_NOT_SUPPORTED;
+    }
+    else
+    {
+        // only in-place formats are supported for non-batched transforms
+        if(format != HIPFFT_XT_FORMAT_INPLACE && format != HIPFFT_XT_FORMAT_INPLACE_SHUFFLED)
+            return HIPFFT_NOT_SUPPORTED;
+        // 2D real forward (resp. inverse) transforms accept only HIPFFT_XT_FORMAT_INPLACE
+        // (resp. HIPFFT_XT_FORMAT_INPLACE_SHUFFLED).
+        if(plan->transform_lengths.size() == 2)
+        {
+            if(plan->io_type.is_real_to_complex() && format != HIPFFT_XT_FORMAT_INPLACE)
+                return HIPFFT_NOT_SUPPORTED;
+            if(plan->io_type.is_complex_to_real() && format != HIPFFT_XT_FORMAT_INPLACE_SHUFFLED)
+                return HIPFFT_NOT_SUPPORTED;
+        }
+    }
 
     std::vector<hipfftXtSubFormat> relevant_field_formats = {format};
     if(format_is_in_place(format))
@@ -2413,16 +2438,24 @@ try
     const auto key_insubFormat = static_cast<hipfftXtSubFormat>(input->subFormat);
     switch(key_insubFormat)
     {
-    case HIPFFT_XT_FORMAT_INPUT:
-        [[fallthrough]];
-    case HIPFFT_XT_FORMAT_OUTPUT:
-        [[fallthrough]];
     case HIPFFT_XT_FORMAT_1D_INPUT_SHUFFLED:
         return HIPFFT_NOT_IMPLEMENTED;
+    case HIPFFT_XT_FORMAT_OUTPUT:
+        return HIPFFT_NOT_SUPPORTED;
+    case HIPFFT_XT_FORMAT_INPUT:
+        // only multi-batch cases, input -> output
+        if(plan->batch == 1
+           || static_cast<hipfftXtSubFormat>(output->subFormat) != HIPFFT_XT_FORMAT_OUTPUT)
+        {
+            return HIPFFT_NOT_SUPPORTED;
+        }
+        break;
     case HIPFFT_XT_FORMAT_INPLACE:
-        [[fallthrough]];
-    case HIPFFT_XT_FORMAT_INPLACE_SHUFFLED:
         if(input != output)
+            return HIPFFT_INVALID_VALUE;
+        break;
+    case HIPFFT_XT_FORMAT_INPLACE_SHUFFLED:
+        if(input != output && plan->batch > 1)
             return HIPFFT_INVALID_VALUE;
         break;
     default:
@@ -2435,7 +2468,7 @@ try
 
     const auto ret
         = rocfft_execute(it->second, input->descriptor->data, output->descriptor->data, plan->info);
-    if(ret == rocfft_status_success && input == output)
+    if(ret == rocfft_status_success && input == output && plan->batch == 1)
     {
         // If the execution was succesful, then we can change the subformat value if necessary.
         switch(input->subFormat)

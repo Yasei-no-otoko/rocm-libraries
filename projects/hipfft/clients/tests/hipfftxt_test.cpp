@@ -539,8 +539,14 @@ struct hipfftxt_test_params_t
         }
         else
         {
-            // Only supporting unbatched multi-dimensional cases for now.
-            return batch == 1 && transform_lengths.size() > 1;
+            // Not supporting unbatched 1D transforms for now.
+            if(batch == 1 && transform_lengths.size() == 1)
+                return false;
+            // Not supporting batched transforms if the number of GPUs is not
+            // greater than the batch size
+            if(batch > 1 && ngpus > batch)
+                return false;
+            return true;
         }
     }
 
@@ -729,7 +735,7 @@ static void verify_data_distribution(const hipfftLibXtDesc_wrapper_t& desc,
 //   - non-natural explicit output descriptor formats (test infrastructure not yet extended)
 //   - HIPFFT_XT_FORMAT_OUTPUT used as input descriptor format (crashes cuFFT for some cases)
 //   - configurations where any device's data chunk is empty (semantics unclear)
-TEST_P(hipfftXtGeneralizedUsage, AllocCopyExecCopyVerify)
+TEST_P(hipfftXtGeneralizedUsage, AllocH2DCopyExecD2HCopyVerify)
 try
 {
     const auto& params = GetParam();
@@ -811,16 +817,6 @@ try
                                        params.hipfft_transform_type(),
                                        params.batch,
                                        workSize.data());
-        if constexpr(rocfft_backend)
-        {
-            ASSERT_EQ(hipfft_rt, HIPFFT_NOT_IMPLEMENTED)
-                << "multi-batch multi-gpu transforms should return not implemented";
-            if(verbose)
-                std::cout << "Plan creation failed as expected for multi-batch multi-gpu "
-                             "transform with rocFFT backend : "
-                          << hipfftResult_string(hipfft_rt) << std::endl;
-            return; // early exit from test for unsupported configuration
-        }
     }
     else
     {
@@ -1012,13 +1008,8 @@ try
 
     if(params.batch == 1 && params.transform_lengths.size() == 1)
     {
-        if(verbose)
-        {
-            std::cout << "Unbatched 1D transforms are not supported by the test infrastructure "
-                         "yet: no verification of the execution steps of the test"
-                      << std::endl;
-        }
-        return; // early exit from test for unsupported configuration
+        GTEST_SKIP() << "Unbatched 1D transforms are not supported by the test infrastructure "
+                        "yet: no verification of the execution steps of the test";
     }
     if(output_desc.get_raw() != input_desc.get_raw() /* out-of-place usage */
        && params.output_desc_format()
@@ -1085,14 +1076,11 @@ try
     {
         ASSERT_EQ(input_desc.get_raw(), output_desc.get_raw())
             << "in-place transform should have same input and output descriptors";
-        // check that the descriptor's subformat was updated to the expected
-        // output format after execution for unbatched cases
-        if(params.batch == 1)
-        {
-            ASSERT_EQ((*input_desc).subFormat, params.output_desc_format())
-                << "in-place transform's descriptor subFormat was not updated to the expected "
-                   "output format after execution";
-        }
+        // check that the descriptor's subformat was updated (resp. not updated) to
+        // the expected output subformat after execution for unbatched (resp. batched) cases
+        ASSERT_EQ((*input_desc).subFormat, params.output_desc_format())
+            << "in-place transform's descriptor subFormat was not updated to the expected "
+               "output format after execution";
     }
 
     if(verbose)

@@ -1173,12 +1173,16 @@ private:
         else
         {
             // separate alloc + init "Many" APIs are always allowed
-            allowed_apis.push_back(CREATE_MAKE_PLAN_MANY);
-            allowed_apis.push_back(CREATE_MAKE_PLAN_MANY64);
-            allowed_apis.push_back(CREATE_XT_MAKE_PLAN_MANY);
+            // Note: for multi-device unbatched FFT, only CREATE_MAKE_PLAN_Nd is allowed
+            if(get_num_used_gpus() == 1 || batched)
+            {
+                allowed_apis.push_back(CREATE_MAKE_PLAN_MANY);
+                allowed_apis.push_back(CREATE_MAKE_PLAN_MANY64);
+                allowed_apis.push_back(CREATE_XT_MAKE_PLAN_MANY);
 
-            if(!need_separate_create_make())
-                allowed_apis.push_back(PLAN_MANY);
+                if(!need_separate_create_make())
+                    allowed_apis.push_back(PLAN_MANY);
+            }
 
             // non-many APIs are only allowed if FFT is contiguous, and
             // only the 1D API allows for batched FFTs.

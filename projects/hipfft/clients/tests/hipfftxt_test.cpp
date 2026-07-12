@@ -58,47 +58,19 @@ struct is_fft_enum<hipfftXtSubFormat, true> : std::true_type
 {
 };
 
-inline void validate_or_throw(hipfftXtSubFormat subformat, const std::string& func_name)
+template <>
+struct fft_enum_map<hipfftXtSubFormat>
 {
-    switch(subformat)
-    {
-    case HIPFFT_XT_FORMAT_INPLACE:
-        [[fallthrough]];
-    case HIPFFT_XT_FORMAT_INPLACE_SHUFFLED:
-        [[fallthrough]];
-    case HIPFFT_XT_FORMAT_INPUT:
-        [[fallthrough]];
-    case HIPFFT_XT_FORMAT_OUTPUT:
-        [[fallthrough]];
-    case HIPFFT_XT_FORMAT_1D_INPUT_SHUFFLED:
-        [[fallthrough]];
-    case HIPFFT_FORMAT_UNDEFINED:
-        return;
-    default:
-        throw std::invalid_argument("invalid/undefined subformat for " + func_name);
-    }
-}
-
-static std::string format_name(const hipfftXtSubFormat& subformat)
-{
-    switch(subformat)
-    {
-    case HIPFFT_XT_FORMAT_INPUT:
-        return "HIPFFT_XT_FORMAT_INPUT";
-    case HIPFFT_XT_FORMAT_OUTPUT:
-        return "HIPFFT_XT_FORMAT_OUTPUT";
-    case HIPFFT_XT_FORMAT_INPLACE:
-        return "HIPFFT_XT_FORMAT_INPLACE";
-    case HIPFFT_XT_FORMAT_INPLACE_SHUFFLED:
-        return "HIPFFT_XT_FORMAT_INPLACE_SHUFFLED";
-    case HIPFFT_XT_FORMAT_1D_INPUT_SHUFFLED:
-        return "HIPFFT_XT_FORMAT_1D_INPUT_SHUFFLED";
-    case HIPFFT_FORMAT_UNDEFINED:
-        return "HIPFFT_FORMAT_UNDEFINED";
-    default:
-        throw std::invalid_argument("Unexpected value of hipfftXtSubFormat given to format_name()");
-    }
-}
+    static constexpr std::string_view type_name = "multi-device descriptor subformat";
+    static constexpr std::pair<hipfftXtSubFormat, std::string_view> entries[] = {
+        {HIPFFT_XT_FORMAT_INPUT, "HIPFFT_XT_FORMAT_INPUT"},
+        {HIPFFT_XT_FORMAT_OUTPUT, "HIPFFT_XT_FORMAT_OUTPUT"},
+        {HIPFFT_XT_FORMAT_INPLACE, "HIPFFT_XT_FORMAT_INPLACE"},
+        {HIPFFT_XT_FORMAT_INPLACE_SHUFFLED, "HIPFFT_XT_FORMAT_INPLACE_SHUFFLED"},
+        {HIPFFT_XT_FORMAT_1D_INPUT_SHUFFLED, "HIPFFT_XT_FORMAT_1D_INPUT_SHUFFLED"},
+        {HIPFFT_FORMAT_UNDEFINED, "HIPFFT_FORMAT_UNDEFINED"},
+    };
+};
 
 std::mt19937& get_prng()
 {
@@ -361,10 +333,9 @@ struct hipfftxt_test_params_t
     inline std::string str() const
     {
         std::ostringstream oss;
-        oss << (precision == fft_precision_single ? "single" : "double") << "_"
-            << fft_transform_type_name(dft_type) << "_input_fmt_" << format_name(input_desc_format)
-            << "_output_fmt_" << format_name(output_desc_format()) << "_batch_" << batch
-            << "_lengths_";
+        oss << fft_enum_to_string(precision) << "_" << fft_enum_to_string(dft_type) << "_input_fmt_"
+            << fft_enum_to_string(input_desc_format) << "_output_fmt_" << fft_enum_to_string(output_desc_format())
+            << "_batch_" << batch << "_lengths_";
         for(auto len : transform_lengths)
             oss << len << "_";
         oss << "ngpus_" << ngpus;
@@ -374,12 +345,11 @@ struct hipfftxt_test_params_t
 
     friend std::ostream& operator<<(std::ostream& stream, const hipfftxt_test_params_t& params)
     {
-        stream << "precision: " << (params.precision == fft_precision_single ? "single" : "double")
-               << ", "
-               << "dft type: " << fft_transform_type_name(params.dft_type) << ", "
-               << "input format: " << format_name(params.input_desc_format) << ", "
-               << "input subformat: " << format_name(params.input_desc_format) << ", "
-               << "output subformat: " << format_name(params.output_desc_format()) << ", "
+        stream << "precision: " << fft_enum_to_string(params.precision) << ", "
+               << "dft type: " << fft_enum_to_string(params.dft_type) << ", "
+               << "input format: " << fft_enum_to_string(params.input_desc_format) << ", "
+               << "input subformat: " << fft_enum_to_string(params.input_desc_format) << ", "
+               << "output subformat: " << fft_enum_to_string(params.output_desc_format()) << ", "
                << "ngpus: " << params.ngpus << ", "
                << "batch: " << params.batch << ", "
                << "transform lengths: (";
@@ -690,11 +660,11 @@ static void verify_data_distribution(const hipfftLibXtDesc_wrapper_t& desc,
         const auto* global_elem = static_cast<const char*>(global_data.data()) + global_byte_offset;
         std::memcpy(&host_elem, global_elem, elem_sz);
         ASSERT_EQ(std::memcmp(&device_elem, &host_elem, elem_sz), 0)
-            << io_name(desc_io_label) << " data mismatch on device index " << dev_idx << " (GPU id "
-            << (*desc).descriptor->GPUs[dev_idx] << ") at local buffer index " << local_buffer_index
-            << " expected to match global buffer index " << global_buffer_index
-            << " corresponding to global batch index " << random_global_batch_idx
-            << " and global multi-index (" <<
+            << fft_enum_to_string(desc_io_label) << " data mismatch on device index " << dev_idx
+            << " (GPU id " << (*desc).descriptor->GPUs[dev_idx] << ") at local buffer index "
+            << local_buffer_index << " expected to match global buffer index "
+            << global_buffer_index << " corresponding to global batch index "
+            << random_global_batch_idx << " and global multi-index (" <<
             [&] {
                 std::ostringstream oss;
                 for(size_t i = 0; i < random_global_multi_idx.size(); ++i)
@@ -923,14 +893,14 @@ try
             // to fail. If not, hipfftxt_test_params_t::has_valid_input_format may needs to be
             // revised.
             if(hipfft_rt == HIPFFT_SUCCESS)
-                throw std::logic_error("hipfftXtMalloc completed successfully on " + io_name(io)
-                                       + " for supposedly invalid descriptor format "
-                                       + format_name(io_desc_format)
-                                       + " (test-side revisions may be needed)");
+                throw std::logic_error(
+                    "hipfftXtMalloc completed successfully on " + fft_enum_to_string(io)
+                    + " for supposedly invalid descriptor format " + fft_enum_to_string(io_desc_format)
+                    + " (test-side revisions may be needed)");
             if(verbose)
             {
-                std::cout << "hipfftXtMalloc failed as anticipated on " + io_name(io)
-                                 + " for descriptor format " + format_name(io_desc_format)
+                std::cout << "hipfftXtMalloc failed as anticipated on " + fft_enum_to_string(io)
+                                 + " for descriptor format " + fft_enum_to_string(io_desc_format)
                           << std::endl;
             }
             continue;
@@ -948,7 +918,7 @@ try
                                       : HIPFFT_NOT_IMPLEMENTED;
         ASSERT_EQ(hipfft_rt, expected_ret)
             << "Unexpected error code returned by hipfftXtMalloc when allocating the "
-            << io_name(io) << " descriptor of format " << format_name(io_desc_format)
+            << fft_enum_to_string(io) << " descriptor of format " << fft_enum_to_string(io_desc_format)
             << "(returned code " << hipfft_rt << " = " << hipfftResult_string(hipfft_rt)
             << ", while expected returned code was " << expected_ret << " = "
             << hipfftResult_string(expected_ret) << ")";
@@ -959,20 +929,20 @@ try
             if(verbose)
             {
                 std::cout << "Lack of implementation for hipfftXtMalloc with descriptor format "
-                                 + format_name(io_desc_format)
+                                 + fft_enum_to_string(io_desc_format)
                           << " was adequately reported" << std::endl;
             }
             continue;
         }
         // verify the content of the created descriptor
         ASSERT_EQ(static_cast<hipfftXtSubFormat>((*io_desc).subFormat), io_desc_format)
-            << io_name(io) << " descriptor subFormat does not match requested format";
+            << fft_enum_to_string(io) << " descriptor subFormat does not match requested format";
         ASSERT_EQ((*io_desc).descriptor->nGPUs, static_cast<int>(params.ngpus))
-            << io_name(io) << " descriptor nGPUs does not match requested ngpus";
+            << fft_enum_to_string(io) << " descriptor nGPUs does not match requested ngpus";
         for(size_t dev_idx = 0; dev_idx < gpus.size(); ++dev_idx)
         {
             ASSERT_EQ((*io_desc).descriptor->GPUs[dev_idx], gpus[dev_idx])
-                << io_name(io) << " descriptor device[" << dev_idx << "] ("
+                << fft_enum_to_string(io) << " descriptor device[" << dev_idx << "] ("
                 << (*io_desc).descriptor->GPUs[dev_idx] << ") does not match requested GPU ID"
                 << gpus[dev_idx];
             if(verbose > 2)
@@ -982,9 +952,9 @@ try
             if((*io_desc).descriptor->size[dev_idx] > 0)
             {
                 ASSERT_NE((*io_desc).descriptor->data[dev_idx], nullptr)
-                    << io_name(io) << " gpu buffer pointer is null for device index " << dev_idx
-                    << " despite non-zero size " << (*io_desc).descriptor->size[dev_idx] << " = "
-                    << byte_size_to_str((*io_desc).descriptor->size[dev_idx]);
+                    << fft_enum_to_string(io) << " gpu buffer pointer is null for device index "
+                    << dev_idx << " despite non-zero size " << (*io_desc).descriptor->size[dev_idx]
+                    << " = " << byte_size_to_str((*io_desc).descriptor->size[dev_idx]);
             }
         }
     }
@@ -999,8 +969,8 @@ try
         if(verbose)
         {
             std::cout << "Lack of implementation for hipfftXtMalloc with descriptor format(s) "
-                             + format_name(params.input_desc_format) + " and/or "
-                             + format_name(params.output_desc_format())
+                             + fft_enum_to_string(params.input_desc_format) + " and/or "
+                             + fft_enum_to_string(params.output_desc_format())
                       << " was adequately reported" << std::endl;
         }
         return; // early exit from test for unsupported configuration
@@ -1080,8 +1050,8 @@ try
         // the expected output subformat after execution for unbatched (resp. batched) cases
         ASSERT_EQ((*input_desc).subFormat, params.output_desc_format())
             << "in-place transform's descriptor subFormat on output ("
-            << format_name(static_cast<const hipfftXtSubFormat>((*input_desc).subFormat))
-            << ") is not as expected after execution (" << format_name(params.output_desc_format())
+            << fft_enum_to_string(static_cast<const hipfftXtSubFormat>((*input_desc).subFormat))
+            << ") is not as expected after execution (" << fft_enum_to_string(params.output_desc_format())
             << ")";
     }
 

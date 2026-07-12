@@ -843,7 +843,7 @@ public:
                       : (io == fft_io::fft_io_in ? HIPFFT_XT_FORMAT_INPUT
                                                  : HIPFFT_XT_FORMAT_OUTPUT);
             if(xt_desc.alloc_with_err(plan, xt_desc_format) != HIPFFT_SUCCESS)
-                throw std::runtime_error("hipfftXtMalloc failed for " + io_name(io)
+                throw std::runtime_error("hipfftXtMalloc failed for " + fft_enum_to_string(io)
                                          + " descriptor");
         }
         if(hipfftXtMemcpy(plan, xt_input, input_host.data(), HIPFFT_COPY_HOST_TO_DEVICE)

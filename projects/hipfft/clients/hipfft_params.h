@@ -830,7 +830,12 @@ public:
                 xt_output = hipfftLibXtDesc_wrapper_t::make_nonowned(xt_input.get_raw());
                 continue;
             }
-            auto&      xt_desc = (io == fft_io::fft_io_in) ? xt_input : xt_output;
+            auto& xt_desc = (io == fft_io::fft_io_in) ? xt_input : xt_output;
+            // batched in-place are always INPLACE -> INPLACE
+            // unbatched in-place 2/3D always tolerates INPLACE -> INPLACE_SHUFFLED
+            // for forward transforms and INPLACE_SHUFFLED -> INPLACE for inverse
+            // transforms (other cases may be possible, but these are the only ones
+            // that are guaranteed to work)
             const auto xt_desc_format
                 = placement == fft_placement_inplace
                       ? (is_forward() || nbatch > 1 ? HIPFFT_XT_FORMAT_INPLACE
@@ -1173,7 +1178,8 @@ private:
         else
         {
             // separate alloc + init "Many" APIs are always allowed
-            // Note: for multi-device unbatched FFT, only CREATE_MAKE_PLAN_Nd is allowed
+            // Note: for multi-device unbatched FFT, the CREATE_*_MANY should be
+            // avoided (ambiguities about data expected distributions)
             if(get_num_used_gpus() == 1 || batched)
             {
                 allowed_apis.push_back(CREATE_MAKE_PLAN_MANY);

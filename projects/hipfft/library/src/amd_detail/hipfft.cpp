@@ -32,6 +32,7 @@
 #include <memory>
 #include <numeric>
 #include <optional>
+#include <set>
 #include <sstream>
 #include <string>
 #include <type_traits>
@@ -128,26 +129,6 @@ inline bool format_is_in_place(const hipfftXtSubFormat& format)
         [[fallthrough]];
     default:
         throw std::invalid_argument("format_is_in_place: invalid input format");
-    }
-}
-
-inline hipfftXtSubFormat other_io_format_for(hipfftXtSubFormat desc_format, size_t batch_sz)
-{
-    switch(desc_format)
-    {
-    case HIPFFT_XT_FORMAT_INPLACE:
-        return batch_sz > 1 ? HIPFFT_XT_FORMAT_INPLACE : HIPFFT_XT_FORMAT_INPLACE_SHUFFLED;
-    case HIPFFT_XT_FORMAT_INPLACE_SHUFFLED:
-        return batch_sz > 1 ? HIPFFT_XT_FORMAT_INPLACE_SHUFFLED : HIPFFT_XT_FORMAT_INPLACE;
-    case HIPFFT_XT_FORMAT_INPUT:
-        return HIPFFT_XT_FORMAT_OUTPUT;
-    case HIPFFT_XT_FORMAT_OUTPUT:
-        return HIPFFT_XT_FORMAT_INPUT;
-    case HIPFFT_XT_FORMAT_1D_INPUT_SHUFFLED:
-        // TO DO: figure this out if ever implemented
-        throw HIPFFT_NOT_IMPLEMENTED;
-    default:
-        throw std::invalid_argument("other_io_format_for: invalid input format");
     }
 }
 
@@ -356,7 +337,7 @@ struct hipfft_field
             = default_strides(dft_type, placement, field_io_label, transform_batch_and_lengths);
         auto global_field_spans = transform_batch_and_lengths;
         // Adjust logical spans for fields in "hermitian symmetric" domain
-        if(is_real(dft_type) && (is_fwd(dft_type) == (field_io_label == fft_io_out)))
+        if(is_real(dft_type) && (is_fwd(dft_type) == (field_io_label == fft_io::fft_io_out)))
             global_field_spans.back() = (global_field_spans.back() / 2) + 1;
 
         global_field = hipfft_brick(std::vector<size_t>(global_field_spans.size(), 0),
@@ -804,69 +785,47 @@ struct hipfftHandle_t
             return false;
         if(!desc.descriptor)
             return false;
-
-        const auto desc_subformat = static_cast<hipfftXtSubFormat>(desc.subFormat);
-        if(std::none_of(exec_plans.begin(),
-                        exec_plans.end(),
-                        [desc_io_label, desc_subformat](const auto& p) {
-                            return desc_subformat
-                                   == (desc_io_label == fft_io::fft_io_in
-                                           ? p.first.input_desc_format
-                                           : p.first.output_desc_format);
-                        }))
-        {
+        // Verify consistency of set device IDs vs device IDs expected by the plan
+        if(desc.descriptor->nGPUs != static_cast<int>(device_contexts.size()))
             return false;
-        }
-        // Validate internal consistency of the plan's relevant fields
-        std::vector<std::pair<fft_io, hipfftXtSubFormat>> relevant_field_key
-            = {{desc_io_label, desc_subformat}};
-        if(format_is_in_place(desc_subformat))
-        {
-            relevant_field_key.push_back(
-                {other(desc_io_label), other_io_format_for(desc_subformat, batch)});
-        }
-        for(auto [io_label, subformat] : relevant_field_key)
-        {
-            // The relevant field(s) *MUST* exist given the above checks (i.e., multi-device plan
-            // with an appropriate internal rocfft plan). If the expected field is not found, this
-            // is an internal/logic error: letting this accessor throw is consistent with that
-            // (HIPFFT_INTERNAL_ERROR eventually returned to user).
-            const auto& field = io_label == fft_io::fft_io_in ? input_fields.at(subformat)
-                                                              : output_fields.at(subformat);
-            if(field.brick_count() != device_contexts.size())
-                return false;
-            for(size_t idx = 0; idx < field.brick_count(); ++idx)
-            {
-                if(field.get_brick(idx).get_device_id() != device_contexts[idx].device_id)
-                    throw std::logic_error(
-                        "hipfftHandle_t::can_work_with: internal error detected, device ID "
-                        "mismatch between field and device contexts");
-            }
-        }
-        // The plan handle is intrinsically consistent, verify that the given
-        // descriptor can be used
-        if(desc.descriptor->nGPUs
-           != static_cast<decltype(desc.descriptor->nGPUs)>(device_contexts.size()))
-        {
-            return false;
-        }
-        for(auto dev_idx = 0; dev_idx < desc.descriptor->nGPUs; ++dev_idx)
+        for(int dev_idx = 0; dev_idx < desc.descriptor->nGPUs; ++dev_idx)
         {
             if(desc.descriptor->GPUs[dev_idx] != device_contexts[dev_idx].device_id)
                 return false;
-            for(auto [io_label, subformat] : relevant_field_key)
-            {
-                const auto& field = io_label == fft_io::fft_io_in ? input_fields.at(subformat)
-                                                                  : output_fields.at(subformat);
-                const auto  data_sz
-                    = field.get_brick(dev_idx).data_byte_size(io_type.get_hip_data_type(io_label));
-                if(desc.descriptor->size[dev_idx] < data_sz)
-                    return false;
-                if(data_sz > 0 && !desc.descriptor->data[dev_idx])
-                    return false;
-            }
         }
-        return true;
+
+        const auto desc_subformat = static_cast<hipfftXtSubFormat>(desc.subFormat);
+
+        for(const auto& [key, plan] : exec_plans)
+        {
+            const auto& key_io_format = desc_io_label == fft_io::fft_io_in ? key.input_desc_format
+                                                                           : key.output_desc_format;
+            if(desc_subformat != key_io_format)
+                continue;
+            // The descriptor's intended usage was found
+            const std::vector<fft_io> relevant_io_field_labels
+                = format_is_in_place(desc_subformat)
+                      ? std::vector<fft_io>{fft_io::fft_io_in, fft_io::fft_io_out}
+                      : std::vector<fft_io>{desc_io_label};
+            for(const auto io : relevant_io_field_labels)
+            {
+                const auto& field = io == fft_io::fft_io_in
+                                        ? input_fields.at(key.input_desc_format)
+                                        : output_fields.at(key.output_desc_format);
+                for(size_t brick_idx = 0; brick_idx < field.brick_count(); ++brick_idx)
+                {
+                    const auto data_sz
+                        = field.get_brick(brick_idx).data_byte_size(io_type.get_hip_data_type(io));
+                    if(desc.descriptor->size[brick_idx] < data_sz)
+                        return false;
+                    if(data_sz > 0 && !desc.descriptor->data[brick_idx])
+                        return false;
+                }
+            }
+            return true;
+        }
+        // The descriptor's intended usage was not found in the plan's execution plans
+        return false;
     }
 
     template <typename TransformArgType>
@@ -942,27 +901,34 @@ struct hipfftHandle_t
     }
 
     // requires batch, transform_lengths, io_type, and device_contexts to be set
-    std::vector<std::pair<hipfftXtSubFormat, hipfftXtSubFormat>> possible_io_subformats() const
+    std::set<std::pair<hipfftXtSubFormat, hipfftXtSubFormat>> possible_io_subformats() const
     {
-        std::vector<std::pair<hipfftXtSubFormat, hipfftXtSubFormat>> ret;
         if(device_contexts.empty())
             throw std::invalid_argument(
                 "hipfftHandle_t::possible_io_subformats: device_contexts must be non-empty");
+        std::set<std::pair<hipfftXtSubFormat, hipfftXtSubFormat>> ret;
         if(device_contexts.size() == 1)
         {
-            // place holder values for internal logic mapping purposes only,
-            // unrelated to validation of user-given arguments
-            // Using input -> output for out-of-place transforms,
-            // in-place -> in-place otherwise
-            ret.push_back({HIPFFT_XT_FORMAT_INPUT, HIPFFT_XT_FORMAT_OUTPUT});
-            ret.push_back({HIPFFT_XT_FORMAT_INPLACE, HIPFFT_XT_FORMAT_INPLACE});
+            // placeholder format values that depend on placement are used for internal logic
+            // mapping purposes only (format values are not related to any user-given arguments
+            // for single-device usage).
+            for(auto dft_type : io_type.transform_types())
+            {
+                for(auto possible_placement :
+                    {rocfft_placement_inplace, rocfft_placement_notinplace})
+                {
+                    const auto key
+                        = map_key_t::make_single_device_key(dft_type, possible_placement);
+                    ret.insert({key.input_desc_format, key.output_desc_format});
+                }
+            }
         }
         else
         {
             if(batch > 1)
             {
-                ret.push_back({HIPFFT_XT_FORMAT_INPUT, HIPFFT_XT_FORMAT_OUTPUT});
-                ret.push_back({HIPFFT_XT_FORMAT_INPLACE, HIPFFT_XT_FORMAT_INPLACE});
+                ret.insert({HIPFFT_XT_FORMAT_INPUT, HIPFFT_XT_FORMAT_OUTPUT});
+                ret.insert({HIPFFT_XT_FORMAT_INPLACE, HIPFFT_XT_FORMAT_INPLACE});
             }
             else
             {
@@ -970,10 +936,10 @@ struct hipfftHandle_t
                     throw HIPFFT_NOT_IMPLEMENTED;
                 // INPLACE -> INPLACE_SHUFFLED for all 3D, and all 2D except 2D real inverse
                 if(transform_lengths.size() > 2 || !io_type.is_complex_to_real())
-                    ret.push_back({HIPFFT_XT_FORMAT_INPLACE, HIPFFT_XT_FORMAT_INPLACE_SHUFFLED});
+                    ret.insert({HIPFFT_XT_FORMAT_INPLACE, HIPFFT_XT_FORMAT_INPLACE_SHUFFLED});
                 // INPLACE_SHUFFLED -> INPLACE for all 3D, and all 2D except 2D real forward
                 if(transform_lengths.size() > 2 || !io_type.is_real_to_complex())
-                    ret.push_back({HIPFFT_XT_FORMAT_INPLACE_SHUFFLED, HIPFFT_XT_FORMAT_INPLACE});
+                    ret.insert({HIPFFT_XT_FORMAT_INPLACE_SHUFFLED, HIPFFT_XT_FORMAT_INPLACE});
             }
         }
         return ret;
@@ -1106,7 +1072,7 @@ static hipfftResult hipfftMakePlan_internal(hipfftHandle               plan,
     plan->io_type = iotype;
     if(plan->device_contexts.size() > 1)
     {
-        // We currently do not support unbeatched 1D multi-device transforms.
+        // We currently do not support unbatched 1D multi-device transforms.
         if(rm_lengths.size() == 1 && number_of_transforms == 1)
             return HIPFFT_NOT_IMPLEMENTED;
     }
@@ -2285,15 +2251,16 @@ try
         {
             if(key.input_desc_format != format && key.output_desc_format != format)
                 continue;
-            const auto  field_label = key.input_desc_format == format ? fft_io_in : fft_io_out;
-            const auto& field       = field_label == fft_io_in ? plan->input_fields.at(format)
-                                                               : plan->output_fields.at(format);
-            xt_desc->size[dev_idx]  = std::max(xt_desc->size[dev_idx],
+            const auto field_label
+                = key.input_desc_format == format ? fft_io::fft_io_in : fft_io::fft_io_out;
+            const auto& field = field_label == fft_io::fft_io_in ? plan->input_fields.at(format)
+                                                                 : plan->output_fields.at(format);
+            xt_desc->size[dev_idx] = std::max(xt_desc->size[dev_idx],
                                               field.get_brick(dev_idx).data_byte_size(
                                                   plan->io_type.get_hip_data_type(field_label)));
             if(format_is_in_place(format))
             {
-                const auto& other_field = other(field_label) == fft_io_in
+                const auto& other_field = other(field_label) == fft_io::fft_io_in
                                               ? plan->input_fields.at(key.input_desc_format)
                                               : plan->output_fields.at(key.output_desc_format);
                 xt_desc->size[dev_idx]
@@ -2338,7 +2305,7 @@ try
     auto&      xt_desc = *static_cast<hipLibXtDesc*>(h2d ? dest : src);
     // Given descriptor's format is considered input descriptor's format
     // for H2D and output descriptor's format for D2H
-    const auto desc_io_label = h2d ? fft_io_in : fft_io_out;
+    const auto desc_io_label = h2d ? fft_io::fft_io_in : fft_io::fft_io_out;
     // validate user-given descriptor w.r.t. plan
     if(!plan->can_work_with(xt_desc, desc_io_label))
         return HIPFFT_INVALID_VALUE;
@@ -2442,40 +2409,26 @@ try
     const auto dft_type = plan->get_transform_type_for(transform_arg);
     if(!plan->can_execute(dft_type, precision))
         return HIPFFT_INVALID_PLAN;
-    if(!input || !output || !plan->can_work_with(*input, fft_io_in)
-       || (input != output && !plan->can_work_with(*output, fft_io_out)))
+    if(!input || !output || !plan->can_work_with(*input, fft_io::fft_io_in)
+       || (input != output && !plan->can_work_with(*output, fft_io::fft_io_out)))
         return HIPFFT_INVALID_VALUE;
 
-    // only in-place multi-gpu transforms are currently implemented
-    const auto key_insubFormat = static_cast<hipfftXtSubFormat>(input->subFormat);
-    switch(key_insubFormat)
-    {
-    case HIPFFT_XT_FORMAT_1D_INPUT_SHUFFLED:
-        return HIPFFT_NOT_IMPLEMENTED;
-    case HIPFFT_XT_FORMAT_OUTPUT:
+    const auto input_subformat = static_cast<hipfftXtSubFormat>(input->subFormat);
+    // formats' apparent placement must be reflected by argument descriptors
+    if(format_is_in_place(input_subformat) != (input == output))
+        return HIPFFT_INVALID_VALUE;
+    const auto output_subformat
+        = (output != input) ? static_cast<hipfftXtSubFormat>(output->subFormat)
+                            : (plan->batch > 1 ? input_subformat
+                                               : (input_subformat == HIPFFT_XT_FORMAT_INPLACE
+                                                      ? HIPFFT_XT_FORMAT_INPLACE_SHUFFLED
+                                                      : HIPFFT_XT_FORMAT_INPLACE));
+    const auto possible_io_formats = plan->possible_io_subformats();
+    if(possible_io_formats.find({input_subformat, output_subformat}) == possible_io_formats.end())
         return HIPFFT_NOT_SUPPORTED;
-    case HIPFFT_XT_FORMAT_INPUT:
-        // only multi-batch cases, input -> output
-        if(plan->batch == 1
-           || static_cast<hipfftXtSubFormat>(output->subFormat) != HIPFFT_XT_FORMAT_OUTPUT)
-        {
-            return HIPFFT_NOT_SUPPORTED;
-        }
-        break;
-    case HIPFFT_XT_FORMAT_INPLACE:
-        if(input != output)
-            return HIPFFT_INVALID_VALUE;
-        break;
-    case HIPFFT_XT_FORMAT_INPLACE_SHUFFLED:
-        if(input != output && plan->batch > 1)
-            return HIPFFT_INVALID_VALUE;
-        break;
-    default:
-        return HIPFFT_INVALID_VALUE;
-    }
 
-    const auto it = plan->exec_plans.find(hipfftHandle_t::map_key_t{
-        dft_type, key_insubFormat, other_io_format_for(key_insubFormat, plan->batch)});
+    const auto it = plan->exec_plans.find(
+        hipfftHandle_t::map_key_t{dft_type, input_subformat, output_subformat});
     if(it == plan->exec_plans.end())
         throw HIPFFT_INVALID_PLAN;
 

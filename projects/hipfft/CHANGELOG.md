@@ -8,20 +8,21 @@ Documentation for hipFFT is available at
 ### Changed
 
 * Modified the rocFFT backend's implementation details of hipFFT so that cuFFT backend's
-  behavior is matched for multi-device plans configured via `hipfftMakePlan{2,3}d`, with
-  respect to data distribution within descriptors.  Behaviors are now aligned for unbatched,
-  in-place, multi-dimensional transforms.
+  behavior is matched for multi-device plans configured via `hipfftMakePlan{2,3}d` and
+  `hipfftMakePlanMany`, with respect to data distribution within descriptors. Behaviors
+  are now aligned for unbatched multi-dimensional transforms (in-place only) and all
+  batched transforms (in-place and out-of-place).
   The following multi-device use cases remain unimplemented for rocFFT backend, pending
   further analyses of the exact behavior(s) to be aligning with:
-  - batched multi-dimensional transforms of any kind and precision;
-  - unbatched one-dimensional transforms of any kind and precision;
-  - out-of-place transforms of any kind and precision.
-  As a result, expect `HIPFFT_NOT_IMPLEMENTED` error codes to be returned by `hipfftMakePlanMany`
-  and `hipfftMakePlan1d` plan initialization function, if several devices were set prior
-  for the given plan, via `hipfftXtSetGPUs`. Similarly, expect `HIPFFT_NOT_IMPLEMENTED` from
-  `hipfftXtMalloc` when/if requesting the allocation of a descriptor with any of
-  `HIPFFT_XT_FORMAT_INPUT`, `HIPFFT_XT_FORMAT_OUTPUT` or `HIPFFT_XT_FORMAT_1D_INPUT_SHUFFLED`
-  as a sub-format.
+  - unbatched one-dimensional transforms;
+  - batched transforms where the batch count is less than the number of devices.
+  As a result, expect `HIPFFT_NOT_IMPLEMENTED` error codes to be returned by
+  `hipfftMakePlan1d` plan initialization function (if several devices were set prior for
+  the given plan via `hipfftXtSetGPUs`), or by `hipfftMakePlanMany` when the batch count
+  is less than the number of devices. Similarly, expect `HIPFFT_NOT_SUPPORTED` from
+  `hipfftXtMalloc` when requesting a descriptor sub-format that is incompatible with the
+  plan's configuration (e.g., `HIPFFT_XT_FORMAT_INPLACE_SHUFFLED` for batched transforms,
+  or out-of-place formats for unbatched transforms).
 
 ## hipFFT 1.0.24 for ROCm 7.14
 

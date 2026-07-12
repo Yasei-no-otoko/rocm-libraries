@@ -542,8 +542,8 @@ struct hipfftxt_test_params_t
             // Not supporting unbatched 1D transforms for now.
             if(batch == 1 && transform_lengths.size() == 1)
                 return false;
-            // Not supporting batched transforms if the number of GPUs is not
-            // greater than the batch size
+            // Not supporting batched transforms if the number of GPUs exceeds
+            // the batch size
             if(batch > 1 && ngpus > batch)
                 return false;
             return true;
@@ -1079,8 +1079,10 @@ try
         // check that the descriptor's subformat was updated (resp. not updated) to
         // the expected output subformat after execution for unbatched (resp. batched) cases
         ASSERT_EQ((*input_desc).subFormat, params.output_desc_format())
-            << "in-place transform's descriptor subFormat was not updated to the expected "
-               "output format after execution";
+            << "in-place transform's descriptor subFormat on output ("
+            << format_name(static_cast<const hipfftXtSubFormat>((*input_desc).subFormat))
+            << ") is not as expected after execution (" << format_name(params.output_desc_format())
+            << ")";
     }
 
     if(verbose)
